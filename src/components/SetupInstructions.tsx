@@ -1,9 +1,6 @@
 import React from 'react';
-import { useTranslation } from 'react-i18next';
 
 const SetupInstructions: React.FC = () => {
-  const { t } = useTranslation();
-
   return (
     <div className="setup-instructions">
       <h2>🚀 Setup Required</h2>
