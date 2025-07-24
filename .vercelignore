@@ -5,7 +5,14 @@ backend/
 # Test and debug files
 *test*
 *debug*
-*.html
+# Exclude specific HTML test files but keep index.html
+/*test*.html
+/*debug*.html
+backend_test.html
+head_clearance_test.html
+search_analysis.html
+test_api.html
+test_frontend.html
 *.ps1
 *.py
 
