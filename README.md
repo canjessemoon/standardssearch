@@ -2,6 +2,8 @@
 
 A powerful AI-enhanced web-based document search application that allows professionals to search through technical standards and reference documents in both English and French.
 
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/canjessemoon/standardssearch)
+
 ## 🌟 Features
 
 - **🤖 AI-Powered Search**: GPT-3.5-turbo and semantic search with OpenAI embeddings
