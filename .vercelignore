@@ -1,0 +1,34 @@
+# Backend files (not needed for frontend deployment)
+backend/
+.venv/
+
+# Test and debug files
+*test*
+*debug*
+*.html
+*.ps1
+*.py
+
+# Keep only essential files for frontend
+!index.html
+!package.json
+!package-lock.json
+!vite.config.ts
+!tsconfig*.json
+!vercel.json
+
+# Documentation
+*.md
+!README.md
+
+# IDE files
+.vscode/
+.github/
+
+# Output files
+*.txt
+*.json
+!package.json
+!package-lock.json
+!tsconfig*.json
+!vercel.json
