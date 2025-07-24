@@ -25,10 +25,13 @@ backend/
 .vscode/
 .github/
 
-# Output files
-*.txt
-*.json
+# Output files - exclude root level json files but keep needed ones
+/*.txt
+/*.json
 !package.json
 !package-lock.json
 !tsconfig*.json
 !vercel.json
+
+# Keep src directory and its contents (including locales)
+!src/
