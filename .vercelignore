@@ -1,44 +1,17 @@
-# Backend files (not needed for frontend deployment)
-backend/
-.venv/
+# Exclude everything first
+*
 
-# Test and debug files
-*test*
-*debug*
-# Exclude specific HTML test files but keep index.html
-/*test*.html
-/*debug*.html
-backend_test.html
-head_clearance_test.html
-search_analysis.html
-test_api.html
-test_frontend.html
-*.ps1
-*.py
-
-# Keep only essential files for frontend
-!index.html
+# Then explicitly include what we need for frontend build
 !package.json
 !package-lock.json
+!index.html
 !vite.config.ts
 !tsconfig*.json
 !vercel.json
+!eslint.config.js
 
-# Documentation
-*.md
-!README.md
-
-# IDE files
-.vscode/
-.github/
-
-# Output files - exclude root level json files but keep needed ones
-/*.txt
-/*.json
-!package.json
-!package-lock.json
-!tsconfig*.json
-!vercel.json
-
-# Keep src directory and its contents (including locales)
+# Include the entire src and public directories
 !src/
+!src/**
+!public/
+!public/**
