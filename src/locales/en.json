@@ -1,0 +1,37 @@
+{
+  "app": {
+    "title": "Document Search Tool",
+    "subtitle": "Search across technical standards and reference documents"
+  },
+  "language": {
+    "toggle": "Language",
+    "english": "English",
+    "french": "French"
+  },  "search": {
+    "placeholder": "Enter search terms... (use \"quotes\" for exact phrases)",
+    "button": "Search",
+    "loading": "Searching...",
+    "clear": "Clear",
+    "tip": "Tip: Use quotes around phrases for exact matching, e.g., \"whole body vibration\""
+  },
+  "documents": {
+    "title": "Select Documents",
+    "selectAll": "Select All",
+    "deselectAll": "Deselect All",
+    "selected": "{{count}} documents selected"
+  },
+  "results": {
+    "title": "Search Results",
+    "noResults": "No results found",
+    "totalMatches": "{{count}} matches found",
+    "document": "Document",
+    "section": "Section",
+    "page": "Page {{number}}",
+    "matchedTerm": "Matched term: {{term}}"
+  },
+  "errors": {
+    "searchFailed": "Search failed. Please try again.",
+    "documentsLoadFailed": "Failed to load documents.",
+    "networkError": "Network error. Please check your connection."
+  }
+}

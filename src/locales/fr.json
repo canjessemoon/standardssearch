@@ -1,0 +1,37 @@
+{
+  "app": {
+    "title": "Outil de Recherche de Documents",
+    "subtitle": "Rechercher dans les normes techniques et documents de référence"
+  },
+  "language": {
+    "toggle": "Langue",
+    "english": "Anglais",
+    "french": "Français"
+  },  "search": {
+    "placeholder": "Saisir les termes de recherche... (utilisez des \"guillemets\" pour des phrases exactes)",
+    "button": "Rechercher",
+    "loading": "Recherche en cours...",
+    "clear": "Effacer",
+    "tip": "Astuce: Utilisez des guillemets autour des phrases pour une correspondance exacte, ex: \"vibration corps entier\""
+  },
+  "documents": {
+    "title": "Sélectionner les Documents",
+    "selectAll": "Tout sélectionner",
+    "deselectAll": "Tout désélectionner",
+    "selected": "{{count}} documents sélectionnés"
+  },
+  "results": {
+    "title": "Résultats de Recherche",
+    "noResults": "Aucun résultat trouvé",
+    "totalMatches": "{{count}} correspondances trouvées",
+    "document": "Document",
+    "section": "Section",
+    "page": "Page {{number}}",
+    "matchedTerm": "Terme trouvé: {{term}}"
+  },
+  "errors": {
+    "searchFailed": "La recherche a échoué. Veuillez réessayer.",
+    "documentsLoadFailed": "Échec du chargement des documents.",
+    "networkError": "Erreur réseau. Veuillez vérifier votre connexion."
+  }
+}
