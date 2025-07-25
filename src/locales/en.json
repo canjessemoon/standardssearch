@@ -27,7 +27,8 @@
     "document": "Document",
     "section": "Section",
     "page": "Page {{number}}",
-    "matchedTerm": "Matched term: {{term}}"
+    "matchedTerm": "Matched term: {{term}}",
+    "viewPdf": "View PDF"
   },
   "errors": {
     "searchFailed": "Search failed. Please try again.",

@@ -6,7 +6,7 @@ import type { Document, SearchResult } from './services/api';
 import LanguageToggle from './components/LanguageToggle.tsx';
 import SearchPanel from './components/SearchPanel.tsx';
 import DocumentSelector from './components/DocumentSelector.tsx';
-import ResultsViewer from './components/ResultsViewer.tsx';
+import ResultsViewer from './components/ResultsViewerWithPreview.tsx';
 import LoadingSpinner from './components/LoadingSpinner.tsx';
 import SetupInstructions from './components/SetupInstructions.tsx';
 import ChatInterface from './components/ChatInterface.tsx';

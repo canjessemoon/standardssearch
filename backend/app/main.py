@@ -1010,6 +1010,149 @@ def create_llm_index():
         logger.error(f"LLM indexing error: {e}")
         return jsonify({'error': f'Indexing failed: {str(e)}'}), 500
 
+@app.route('/api/documents/<document_name>/preview', methods=['GET'])
+def get_document_preview(document_name):
+    """Get PDF preview for a specific page with optional text highlighting"""
+    try:
+        # Check if document exists
+        if document_name not in document_index:
+            return jsonify({'error': 'Document not found'}), 404
+        
+        page_number = request.args.get('page', 1, type=int)
+        search_terms = request.args.get('search', '', type=str)
+        
+        # Construct file path
+        file_path = os.path.join(DOCUMENTS_DIR, document_name)
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'PDF file not found'}), 404
+        
+        # Use PyMuPDF to render PDF page as image
+        try:
+            doc = fitz.open(file_path)
+            if page_number < 1 or page_number > len(doc):
+                return jsonify({'error': 'Page number out of range'}), 400
+            
+            page = doc.load_page(page_number - 1)  # 0-indexed
+            
+            # Highlight search terms if provided
+            if search_terms:
+                highlight_search_terms_in_page(page, search_terms)
+            
+            # Render page to image with higher quality
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))  # 2x zoom for better quality
+            img_data = pix.tobytes("png")
+            
+            doc.close()
+            
+            # Return image as response
+            from flask import Response
+            return Response(img_data, mimetype='image/png')
+            
+        except Exception as e:
+            logger.error(f"Error rendering PDF page: {e}")
+            return jsonify({'error': f'Failed to render page: {str(e)}'}), 500
+            
+    except Exception as e:
+        logger.error(f"PDF preview error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def highlight_search_terms_in_page(page, search_terms):
+    """Highlight search terms in a PDF page using PyMuPDF"""
+    try:
+        # Parse search terms (handle quoted phrases and individual words)
+        terms_to_highlight = []
+        
+        if search_terms:
+            # Split search terms by spaces but preserve quoted phrases
+            import shlex
+            try:
+                parsed_terms = shlex.split(search_terms)
+            except ValueError:
+                # Fallback if shlex fails (unmatched quotes)
+                parsed_terms = search_terms.split()
+            
+            for term in parsed_terms:
+                if term.strip():
+                    terms_to_highlight.append(term.strip())
+        
+        # Highlight each term with a different color
+        colors = [
+            fitz.utils.getColor("yellow"),      # Primary highlight - yellow
+            fitz.utils.getColor("lightgreen"),  # Secondary highlight - light green
+            fitz.utils.getColor("lightblue"),   # Tertiary highlight - light blue
+            fitz.utils.getColor("pink"),        # Additional highlight - pink
+            fitz.utils.getColor("orange"),      # Additional highlight - orange
+        ]
+        
+        total_highlights = 0
+        
+        for i, term in enumerate(terms_to_highlight[:5]):  # Limit to 5 terms to avoid clutter
+            color = colors[i % len(colors)]
+            
+            # Search for the term in the page (case insensitive)
+            text_instances = page.search_for(term, flags=fitz.TEXT_DEHYPHENATE)
+            
+            # Also try variations of the term for better matching
+            if not text_instances and len(term) > 3:
+                # Try without common suffixes/prefixes
+                variations = [
+                    term.lower(),
+                    term.upper(),
+                    term.capitalize(),
+                ]
+                
+                for variation in variations:
+                    text_instances = page.search_for(variation, flags=fitz.TEXT_DEHYPHENATE)
+                    if text_instances:
+                        break
+            
+            # Highlight each occurrence
+            for inst in text_instances:
+                try:
+                    highlight = page.add_highlight_annot(inst)
+                    highlight.set_colors({"stroke": color, "fill": color})
+                    highlight.set_opacity(0.6)  # Make it visible but not too bright
+                    highlight.update()
+                    total_highlights += 1
+                except Exception as e:
+                    logger.warning(f"Failed to add highlight annotation: {e}")
+                    continue
+        
+        logger.info(f"Successfully added {total_highlights} highlights for {len(terms_to_highlight)} search terms on page")
+        
+    except Exception as e:
+        logger.warning(f"Failed to highlight search terms: {e}")
+        # Don't fail the entire request if highlighting fails
+
+@app.route('/api/documents/<document_name>/info', methods=['GET'])
+def get_document_info(document_name):
+    """Get document information including page count"""
+    try:
+        if document_name not in document_index:
+            return jsonify({'error': 'Document not found'}), 404
+        
+        file_path = os.path.join(DOCUMENTS_DIR, document_name)
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'PDF file not found'}), 404
+        
+        # Get page count using PyMuPDF
+        doc = fitz.open(file_path)
+        page_count = len(doc)
+        doc.close()
+        
+        doc_data = document_index[document_name]
+        
+        return jsonify({
+            'filename': document_name,
+            'title': doc_data['title'],
+            'page_count': page_count,
+            'sections_count': len(doc_data['sections'])
+        })
+        
+    except Exception as e:
+        logger.error(f"Document info error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     # Load translation map and index documents on startup
     load_translation_map()

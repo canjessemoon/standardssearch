@@ -27,7 +27,8 @@
     "document": "Document",
     "section": "Section",
     "page": "Page {{number}}",
-    "matchedTerm": "Terme trouvé: {{term}}"
+    "matchedTerm": "Terme trouvé: {{term}}",
+    "viewPdf": "Voir PDF"
   },
   "errors": {
     "searchFailed": "La recherche a échoué. Veuillez réessayer.",
