@@ -22,7 +22,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedDocuments }) => {
 
   // Check LLM availability on component mount
   React.useEffect(() => {
-    fetch('/api/llm/status')
+    fetch('http://localhost:5000/api/llm/status')
       .then(res => res.json())
       .then(status => setLlmStatus(status))
       .catch(err => console.error('Failed to check LLM status:', err));
@@ -43,7 +43,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedDocuments }) => {
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/llm/chat', {
+      const response = await fetch('http://localhost:5000/api/llm/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

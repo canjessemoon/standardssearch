@@ -104,6 +104,7 @@ LOCALES_DIR = os.path.join(os.path.dirname(__file__), '..', 'locales')
 # Document index storage
 document_index = {}
 translation_map = {}
+llm_engine = None  # Global LLM engine with embeddings
 
 def load_translation_map():
     """Load French to English translation/synonym map"""
@@ -935,6 +936,8 @@ def debug_search():
 @app.route('/api/llm/chat', methods=['POST'])
 def llm_chat():
     """LLM-powered chat interface for document queries"""
+    global llm_engine
+    
     if not LLM_AVAILABLE:
         return jsonify({'error': 'LLM capabilities not available. Install required packages.'}), 503
     
@@ -946,25 +949,96 @@ def llm_chat():
         if not query:
             return jsonify({'error': 'Query is required'}), 400
         
-        # Initialize LLM engine
-        llm_engine = LLMSearchEngine()
+        # If embeddings are not available, use regular search + LLM analysis
+        if not llm_engine or not getattr(llm_engine, 'section_embeddings', None):
+            logger.info("Using fallback LLM search without embeddings")
+            
+            # Perform regular text search first
+            search_terms = parse_search_query(query)
+            translated_terms = translate_search_terms(search_terms, 'en')
+            
+            # Search in selected documents
+            documents_to_search = selected_documents if selected_documents else list(document_index.keys())
+            search_results = []
+            
+            for doc_filename in documents_to_search[:2]:  # Limit to 2 docs to avoid token limit
+                if doc_filename not in document_index:
+                    continue
+                    
+                doc_data = document_index[doc_filename]
+                
+                # Search in each section
+                for section in doc_data['sections'][:10]:  # Limit sections to avoid token limit
+                    section_content = '\n'.join(section['content'])
+                    matches = search_in_text(section_content, translated_terms)
+                    
+                    for match in matches[:3]:  # Limit matches per section
+                        search_results.append({
+                            'document': doc_data['title'],
+                            'section_title': section['title'],
+                            'page': section['page'],
+                            'context': match['context'][:300]  # Limit context length
+                        })
+            
+            # Use LLM to analyze search results
+            if search_results:
+                # Create a simple LLM engine just for text generation
+                simple_llm = LLMSearchEngine()
+                
+                # Prepare context from search results
+                context = f"Query: {query}\n\nRelevant document sections:\n"
+                for i, result in enumerate(search_results[:5], 1):  # Limit to top 5 results
+                    context += f"\n{i}. From {result['document']} - {result['section_title']} (Page {result['page']}):\n"
+                    context += f"{result['context']}\n"
+                
+                # Generate LLM response
+                try:
+                    response = simple_llm.client.chat.completions.create(
+                        model=simple_llm.model,
+                        messages=[
+                            {"role": "system", "content": "You are a helpful assistant that answers questions about technical documents. Provide accurate, concise answers based only on the provided document sections. If the information is not in the provided context, say so."},
+                            {"role": "user", "content": f"Based on the following document sections, please answer this question: {query}\n\n{context}"}
+                        ],
+                        max_tokens=500,
+                        temperature=0.3
+                    )
+                    
+                    llm_response = response.choices[0].message.content
+                    tokens_used = response.usage.total_tokens
+                    
+                except Exception as llm_error:
+                    logger.error(f"LLM generation error: {llm_error}")
+                    llm_response = f"I found relevant information in the documents, but couldn't generate a response due to: {str(llm_error)}"
+                    tokens_used = 0
+            else:
+                llm_response = "I couldn't find relevant information in the selected documents for your query. Please try different search terms or select different documents."
+                tokens_used = 0
+            
+            return jsonify({
+                'query': query,
+                'llm_response': llm_response,
+                'semantic_matches': [],
+                'related_sections': search_results[:5],
+                'tokens_used': tokens_used
+            })
         
-        # Perform hybrid search (semantic + LLM)
-        results = llm_engine.hybrid_search(
-            query, 
-            document_index, 
-            use_semantic=True, 
-            use_llm=True,
-            top_k=5
-        )
-        
-        return jsonify({
-            'query': query,
-            'llm_response': results['llm_response'],
-            'semantic_matches': results['semantic_matches'],
-            'related_sections': results['combined_results'],
-            'tokens_used': results.get('tokens_used', 0)
-        })
+        else:
+            # Use the full hybrid search with embeddings if available
+            results = llm_engine.hybrid_search(
+                query, 
+                document_index, 
+                use_semantic=True, 
+                use_llm=True,
+                top_k=5
+            )
+            
+            return jsonify({
+                'query': query,
+                'llm_response': results['llm_response'],
+                'semantic_matches': results['semantic_matches'],
+                'related_sections': results['combined_results'],
+                'tokens_used': results.get('tokens_used', 0)
+            })
         
     except Exception as e:
         logger.error(f"LLM chat error: {e}")
@@ -1157,6 +1231,20 @@ if __name__ == '__main__':
     # Load translation map and index documents on startup
     load_translation_map()
     index_documents()
+    
+    # Index documents for LLM semantic search if LLM is available
+    if LLM_AVAILABLE and document_index:
+        try:
+            logger.info("Initializing LLM search engine...")
+            llm_engine = LLMSearchEngine()
+            
+            # Skip embeddings for now due to API quota limitations
+            logger.info("Skipping embedding creation due to API quota - LLM will use text search fallback")
+            logger.info("LLM search capabilities (without embeddings) loaded successfully")
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize LLM search: {e}")
+            llm_engine = None
     
     # Run the Flask app
     app.run(debug=True, host='0.0.0.0', port=5000)
