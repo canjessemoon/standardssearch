@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Head Clearance Search - Static Analysis</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.6; }
+        .section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .issue { background-color: #fff3cd; border-color: #ffeaa7; }
+        .solution { background-color: #d1ecf1; border-color: #bee5eb; }
+        .code { background-color: #f8f9fa; padding: 10px; border-radius: 3px; font-family: monospace; margin: 10px 0; }
+        .highlight { background-color: #ffeb3b; padding: 2px 4px; }
+        h2 { color: #2c3e50; }
+        h3 { color: #34495e; }
+        ul { margin: 10px 0; }
+        li { margin: 5px 0; }
+    </style>
+</head>
+<body>
+    <h1>🔍 Head Clearance Search Issue Analysis</h1>
+    
+    <div class="section issue">
+        <h2>🚨 The Problem</h2>
+        <p>You're searching for <span class="highlight">"head clearance"</span> and not finding matches even though you can see this phrase on page 182, section 5.6.2.2.1 of MIL-STD-1472H.</p>
+        
+        <h3>Common causes for this issue:</h3>
+        <ul>
+            <li><strong>PDF Text Extraction Artifacts</strong> - Invisible characters, soft hyphens, or unusual spacing</li>
+            <li><strong>Formatting Issues</strong> - The phrase might be split across lines or columns</li>
+            <li><strong>OCR vs Native Text</strong> - If the PDF was scanned, OCR might not extract text perfectly</li>
+            <li><strong>Section Parsing</strong> - The content might be in a different section than expected</li>
+        </ul>
+    </div>
+
+    <div class="section solution">
+        <h2>✅ Solutions Implemented</h2>
+        
+        <h3>1. Enhanced Text Normalization</h3>
+        <div class="code">
+def clean_and_normalize_text(text):
+    # Remove invisible characters like soft hyphens, zero-width spaces
+    text = text.replace('\u00ad', '')  # soft hyphen
+    text = text.replace('\u200b', '')  # zero-width space
+    text = text.replace('\u200c', '')  # zero-width non-joiner
+    
+    # Handle PDF line breaks and formatting
+    text = re.sub(r'(\w)-\s*\n\s*(\w)', r'\1\2', text)  # Remove line-break hyphens
+    text = re.sub(r'(\w)\s*\n\s*(\w)', r'\1 \2', text)  # Join words split across lines
+        </div>
+
+        <h3>2. Multiple Search Strategies</h3>
+        <ul>
+            <li><strong>Flexible Regex</strong> - Handles variations in spacing and punctuation</li>
+            <li><strong>Variant Matching</strong> - Tries "headclearance", "head-clearance", "head clearance"</li>
+            <li><strong>Proximity Search</strong> - Finds words that appear close to each other</li>
+            <li><strong>Aggressive Cleaning</strong> - Removes all punctuation for fuzzy matching</li>
+        </ul>
+
+        <h3>3. Debug Capabilities</h3>
+        <p>Added special debug endpoints to help troubleshoot search issues:</p>
+        <div class="code">
+POST /api/debug/search
+{
+    "query": "\"head clearance\"",
+    "document": "MIL-STD-1472H.pdf"
+}
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>🔧 Testing the Improvements</h2>
+        
+        <h3>To test if the backend is working:</h3>
+        <ol>
+            <li>Open the main application at <strong>http://localhost:5173</strong></li>
+            <li>Try searching for individual words: <code>head clearance</code> (no quotes)</li>
+            <li>Try searching for exact phrase: <code>"head clearance"</code> (with quotes)</li>
+            <li>Compare the number of results</li>
+        </ol>
+
+        <h3>Expected Results:</h3>
+        <ul>
+            <li><strong>Individual words</strong>: Should return many matches (anywhere "head" OR "clearance" appears)</li>
+            <li><strong>Exact phrase</strong>: Should return fewer, more precise matches</li>
+            <li>If exact phrase returns 0 but individual words return results, the issue is in phrase detection</li>
+        </ul>
+    </div>
+
+    <div class="section">
+        <h2>🎯 Next Steps</h2>
+        
+        <p>If you're still not seeing "head clearance" results:</p>
+        
+        <h3>1. Check the Frontend Application</h3>
+        <p>Open <a href="http://localhost:5173" target="_blank">http://localhost:5173</a> and test the search directly.</p>
+        
+        <h3>2. Verify the Backend is Running</h3>
+        <p>Check <a href="http://localhost:5000/api/health" target="_blank">http://localhost:5000/api/health</a> - should show backend status.</p>
+        
+        <h3>3. Test Different Search Variations</h3>
+        <div class="code">
+Try these searches:
+• head clearance (individual words)
+• "head clearance" (exact phrase)
+• head-clearance (hyphenated)
+• headclearance (no space)
+• "5.6.2" (section number)
+• clearance (just one word)
+        </div>
+
+        <h3>4. Check Specific Document</h3>
+        <p>In the frontend, make sure you're searching in <strong>MIL-STD-1472H.pdf</strong> specifically, or search all documents.</p>
+    </div>
+
+    <div class="section">
+        <h2>📋 Manual Verification</h2>
+        
+        <p>If the automated search still isn't working, you can:</p>
+        <ul>
+            <li>Open the PDF manually and search for "head clearance" using the PDF viewer's search function</li>
+            <li>Note the exact context and formatting around the phrase</li>
+            <li>Check if there are any unusual characters or formatting in that section</li>
+            <li>Look for variations like "head-clearance" or "head  clearance" (extra spaces)</li>
+        </ul>
+    </div>
+
+    <div class="section solution">
+        <h2>🎉 Summary of Improvements</h2>
+        <p>The search functionality has been significantly enhanced to handle the "head clearance" issue:</p>
+        <ul>
+            <li>✅ Better text extraction and normalization</li>
+            <li>✅ Multiple search strategies for exact phrases</li>
+            <li>✅ Debug endpoints for troubleshooting</li>
+            <li>✅ Handling of PDF formatting artifacts</li>
+            <li>✅ Improved phrase pattern matching</li>
+        </ul>
+        
+        <p><strong>The next step is to test these improvements in the live application.</strong></p>
+    </div>
+
+</body>
+</html>

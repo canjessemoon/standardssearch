@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backend Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .result { margin: 10px 0; padding: 10px; border: 1px solid #ccc; }
+        .error { background-color: #fee; }
+        .success { background-color: #efe; }
+        button { padding: 10px 20px; margin: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Backend Server Test</h1>
+    
+    <button onclick="testHealth()">Test Health</button>
+    <button onclick="testHeadClearanceSearch()">Test "Head Clearance" Search</button>
+    <button onclick="testIndividualWords()">Test Individual Words</button>
+    
+    <div id="results"></div>
+
+    <script>
+        const resultsDiv = document.getElementById('results');
+        
+        function addResult(title, content, isError = false) {
+            const div = document.createElement('div');
+            div.className = 'result ' + (isError ? 'error' : 'success');
+            div.innerHTML = `<h3>${title}</h3><pre>${content}</pre>`;
+            resultsDiv.appendChild(div);
+        }
+        
+        async function testHealth() {
+            try {
+                const response = await fetch('http://localhost:5000/api/health');
+                const data = await response.json();
+                addResult('Health Check', JSON.stringify(data, null, 2));
+            } catch (error) {
+                addResult('Health Check Error', error.message, true);
+            }
+        }
+        
+        async function testHeadClearanceSearch() {
+            try {
+                const response = await fetch('http://localhost:5000/api/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        query: '"head clearance"',
+                        documents: ['MIL-STD-1472H.pdf']
+                    })
+                });
+                
+                const data = await response.json();
+                
+                const summary = {
+                    total_matches: data.total_matches,
+                    search_terms: data.search_terms,
+                    first_result: data.results[0] ? {
+                        document: data.results[0].document,
+                        page: data.results[0].page,
+                        section_title: data.results[0].section_title,
+                        section_number: data.results[0].section_number,
+                        matched_term: data.results[0].matched_term
+                    } : 'No results'
+                };
+                
+                addResult('Head Clearance Exact Phrase Search', JSON.stringify(summary, null, 2));
+                
+            } catch (error) {
+                addResult('Head Clearance Search Error', error.message, true);
+            }
+        }
+        
+        async function testIndividualWords() {
+            try {
+                const response = await fetch('http://localhost:5000/api/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        query: 'head clearance',
+                        documents: ['MIL-STD-1472H.pdf']
+                    })
+                });
+                
+                const data = await response.json();
+                addResult('Individual Words Search', `Total matches: ${data.total_matches}`);
+                
+            } catch (error) {
+                addResult('Individual Words Search Error', error.message, true);
+            }
+        }
+    </script>
+</body>
+</html>

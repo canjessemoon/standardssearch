@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Head Clearance Search Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test-section { margin: 20px 0; padding: 15px; border: 1px solid #ccc; }
+        .success { background-color: #d4edda; }
+        .error { background-color: #f8d7da; }
+        .warning { background-color: #fff3cd; }
+        button { padding: 10px 15px; margin: 5px; cursor: pointer; }
+        pre { background-color: #f8f9fa; padding: 10px; overflow-x: auto; max-height: 300px; }
+    </style>
+</head>
+<body>
+    <h1>Head Clearance Search Diagnostic</h1>
+    
+    <div class="test-section">
+        <h3>Test 1: Backend Health Check</h3>
+        <button onclick="testHealth()">Test Health</button>
+        <div id="health-result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h3>Test 2: Search for Individual Words</h3>
+        <button onclick="testIndividualWords()">Search: head clearance</button>
+        <div id="individual-result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h3>Test 3: Search for Exact Phrase</h3>
+        <button onclick="testExactPhrase()">Search: "head clearance"</button>
+        <div id="exact-result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h3>Test 4: Debug Search in MIL-STD-1472H</h3>
+        <button onclick="testDebugSearch()">Debug Search</button>
+        <div id="debug-result"></div>
+    </div>
+
+    <script>
+        async function makeRequest(url, options = {}) {
+            try {
+                const response = await fetch(url, options);
+                const data = await response.json();
+                return { success: true, data };
+            } catch (error) {
+                return { success: false, error: error.message };
+            }
+        }
+
+        async function testHealth() {
+            const result = document.getElementById('health-result');
+            result.innerHTML = '<p>Testing...</p>';
+            
+            const response = await makeRequest('http://localhost:5000/api/health');
+            
+            if (response.success) {
+                result.className = 'success';
+                result.innerHTML = `
+                    <p><strong>✓ Backend is healthy!</strong></p>
+                    <p>Documents indexed: ${response.data.documents_indexed}</p>
+                `;
+            } else {
+                result.className = 'error';
+                result.innerHTML = `
+                    <p><strong>✗ Backend not responding</strong></p>
+                    <p>Error: ${response.error}</p>
+                `;
+            }
+        }
+
+        async function testIndividualWords() {
+            const result = document.getElementById('individual-result');
+            result.innerHTML = '<p>Searching...</p>';
+            
+            const response = await makeRequest('http://localhost:5000/api/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    query: 'head clearance',
+                    language: 'en'
+                })
+            });
+            
+            if (response.success) {
+                result.className = response.data.total_matches > 0 ? 'success' : 'warning';
+                result.innerHTML = `
+                    <p><strong>Individual words search completed</strong></p>
+                    <p>Total matches: ${response.data.total_matches}</p>
+                    <pre>${JSON.stringify(response.data, null, 2)}</pre>
+                `;
+            } else {
+                result.className = 'error';
+                result.innerHTML = `
+                    <p><strong>✗ Search failed</strong></p>
+                    <p>Error: ${response.error}</p>
+                `;
+            }
+        }
+
+        async function testExactPhrase() {
+            const result = document.getElementById('exact-result');
+            result.innerHTML = '<p>Searching...</p>';
+            
+            const response = await makeRequest('http://localhost:5000/api/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    query: '"head clearance"',
+                    language: 'en'
+                })
+            });
+            
+            if (response.success) {
+                result.className = response.data.total_matches > 0 ? 'success' : 'warning';
+                result.innerHTML = `
+                    <p><strong>Exact phrase search completed</strong></p>
+                    <p>Total matches: ${response.data.total_matches}</p>
+                    <pre>${JSON.stringify(response.data, null, 2)}</pre>
+                `;
+            } else {
+                result.className = 'error';
+                result.innerHTML = `
+                    <p><strong>✗ Search failed</strong></p>
+                    <p>Error: ${response.error}</p>
+                `;
+            }
+        }
+
+        async function testDebugSearch() {
+            const result = document.getElementById('debug-result');
+            result.innerHTML = '<p>Running debug search...</p>';
+            
+            const response = await makeRequest('http://localhost:5000/api/debug/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    query: '"head clearance"',
+                    document: 'MIL-STD-1472H.pdf'
+                })
+            });
+            
+            if (response.success) {
+                const docResults = response.data.document_results['MIL-STD-1472H.pdf'];
+                const sectionsWithMatches = docResults ? docResults.section_results.length : 0;
+                
+                result.className = sectionsWithMatches > 0 ? 'success' : 'warning';
+                result.innerHTML = `
+                    <p><strong>Debug search completed</strong></p>
+                    <p>Sections with matches: ${sectionsWithMatches}</p>
+                    <pre>${JSON.stringify(response.data, null, 2)}</pre>
+                `;
+            } else {
+                result.className = 'error';
+                result.innerHTML = `
+                    <p><strong>✗ Debug search failed</strong></p>
+                    <p>Error: ${response.error}</p>
+                `;
+            }
+        }
+
+        // Auto-run health check on page load
+        window.onload = function() {
+            testHealth();
+        };
+    </script>
+</body>
+</html>

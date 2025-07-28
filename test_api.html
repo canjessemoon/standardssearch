@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Backend API Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .result { margin: 10px 0; padding: 10px; border: 1px solid #ccc; }
+        .error { background-color: #ffebee; }
+        .success { background-color: #e8f5e8; }
+        button { margin: 5px; padding: 10px; }
+        input { padding: 8px; width: 300px; }
+    </style>
+</head>
+<body>
+    <h1>Backend API Test</h1>
+    
+    <h2>1. Health Check</h2>
+    <button onclick="testHealth()">Test Health Endpoint</button>
+    <div id="healthResult" class="result"></div>
+    
+    <h2>2. Documents</h2>
+    <button onclick="testDocuments()">Get Documents</button>
+    <div id="documentsResult" class="result"></div>
+    
+    <h2>3. Search Test</h2>
+    <input type="text" id="searchQuery" placeholder="Enter search query" value="safety">
+    <button onclick="testSearch()">Test Search</button>
+    <button onclick="testExactSearch()">Test Exact Phrase Search ("safety requirements")</button>
+    <div id="searchResult" class="result"></div>
+
+    <script>
+        const API_BASE = 'http://localhost:5000/api';
+
+        async function testHealth() {
+            const resultDiv = document.getElementById('healthResult');
+            try {
+                const response = await fetch(`${API_BASE}/health`);
+                const data = await response.json();
+                resultDiv.className = 'result success';
+                resultDiv.innerHTML = `<strong>Health Check Success!</strong><br>Status: ${data.status}<br>Documents Indexed: ${data.documents_indexed}`;
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.innerHTML = `<strong>Health Check Failed:</strong><br>${error.message}`;
+            }
+        }
+
+        async function testDocuments() {
+            const resultDiv = document.getElementById('documentsResult');
+            try {
+                const response = await fetch(`${API_BASE}/documents`);
+                const data = await response.json();
+                resultDiv.className = 'result success';
+                resultDiv.innerHTML = `<strong>Documents Success!</strong><br>Found ${data.documents.length} documents:<br>` + 
+                    data.documents.map(doc => `• ${doc.title} (${doc.sections_count} sections)`).join('<br>');
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.innerHTML = `<strong>Documents Failed:</strong><br>${error.message}`;
+            }
+        }
+
+        async function testSearch() {
+            const resultDiv = document.getElementById('searchResult');
+            const query = document.getElementById('searchQuery').value;
+            try {
+                const response = await fetch(`${API_BASE}/search`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: query,
+                        documents: [],
+                        language: 'en'
+                    })
+                });
+                const data = await response.json();
+                resultDiv.className = 'result success';
+                resultDiv.innerHTML = `<strong>Search Success!</strong><br>Query: "${query}"<br>Total matches: ${data.total_matches}<br>` +
+                    `Search terms: ${data.search_terms.join(', ')}<br>` +
+                    (data.results.length > 0 ? `First result: ${data.results[0].document} - ${data.results[0].section_title}` : 'No results');
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.innerHTML = `<strong>Search Failed:</strong><br>${error.message}`;
+            }
+        }
+
+        async function testExactSearch() {
+            const resultDiv = document.getElementById('searchResult');
+            const query = '"safety requirements"';
+            try {
+                const response = await fetch(`${API_BASE}/search`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: query,
+                        documents: [],
+                        language: 'en'
+                    })
+                });
+                const data = await response.json();
+                resultDiv.className = 'result success';
+                resultDiv.innerHTML = `<strong>Exact Phrase Search Success!</strong><br>Query: ${query}<br>Total matches: ${data.total_matches}<br>` +
+                    `Search terms: ${data.search_terms.join(', ')}<br>` +
+                    (data.results.length > 0 ? `First result: ${data.results[0].document} - ${data.results[0].matched_term}` : 'No results');
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.innerHTML = `<strong>Exact Search Failed:</strong><br>${error.message}`;
+            }
+        }
+
+        // Auto-test on load
+        window.onload = function() {
+            testHealth();
+        };
+    </script>
+</body>
+</html>
