@@ -1,5 +1,5 @@
 # Start backend server with LLM capabilities
-$env:OPENAI_API_KEY="***REPLACED***"
+### REMOVED OPENAI API KEY FOR SECURITY ###
 
 Write-Host "Starting backend server with LLM capabilities..."
 Write-Host "API Key configured: $($env:OPENAI_API_KEY.Substring(0,20))..."

@@ -5,7 +5,7 @@ import os
 import sys
 
 # Set the API key
-os.environ['OPENAI_API_KEY'] = '***REPLACED***'
+# REMOVED OPENAI API KEY FOR SECURITY
 
 print("🧪 Testing LLM Setup...")
 print(f"Python version: {sys.version}")
