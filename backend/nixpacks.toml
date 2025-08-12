@@ -1,0 +1,11 @@
+[providers]
+python = "3.11.9"
+
+[phases.build]
+cmds = ["pip install -r requirements.txt"]
+
+[phases.deploy]
+cmd = "python3 app/main.py"
+
+[variables]
+PYTHONUNBUFFERED = "1"
