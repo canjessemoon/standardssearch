@@ -166,6 +166,7 @@ def load_translation_map():
 def extract_text_from_pdf(file_path: str) -> Dict[str, Any]:
     """Extract text from PDF with section detection and OCR fallback"""
     try:
+        logger.info(f"Starting text extraction for: {file_path}")
         extracted_data = {
             'title': os.path.basename(file_path),
             'sections': [],
@@ -173,10 +174,13 @@ def extract_text_from_pdf(file_path: str) -> Dict[str, Any]:
         }
         
         # Try with pdfplumber first
+        logger.info(f"Opening PDF with pdfplumber: {file_path}")
         with pdfplumber.open(file_path) as pdf:
+            logger.info(f"PDF opened successfully, {len(pdf.pages)} pages found")
             for page_num, page in enumerate(pdf.pages):
                 page_text = page.extract_text()
                 if page_text:
+                    logger.info(f"Page {page_num + 1}: extracted {len(page_text)} characters")
                     # Clean and normalize the page text
                     page_text = clean_and_normalize_text(page_text)
                     
@@ -190,6 +194,7 @@ def extract_text_from_pdf(file_path: str) -> Dict[str, Any]:
                     extracted_data['sections'].append(page_section)
                     extracted_data['full_text'] += page_text + '\n'
                 else:
+                    logger.info(f"Page {page_num + 1}: no text extracted, trying OCR")
                     # Try OCR for this page
                     try:
                         # Convert page to image and apply OCR
@@ -197,6 +202,7 @@ def extract_text_from_pdf(file_path: str) -> Dict[str, Any]:
                         pil_image = page_image.original
                         ocr_text = pytesseract.image_to_string(pil_image)
                         if ocr_text.strip():
+                            logger.info(f"Page {page_num + 1}: OCR extracted {len(ocr_text)} characters")
                             # Clean and normalize OCR text
                             ocr_text = clean_and_normalize_text(ocr_text)
                             
@@ -209,13 +215,19 @@ def extract_text_from_pdf(file_path: str) -> Dict[str, Any]:
                             }
                             extracted_data['sections'].append(ocr_section)
                             extracted_data['full_text'] += ocr_text + '\n'
+                        else:
+                            logger.info(f"Page {page_num + 1}: OCR produced no useful text")
                     except Exception as ocr_error:
                         logger.warning(f"OCR failed for page {page_num + 1}: {ocr_error}")
         
+        logger.info(f"pdfplumber extraction complete. Total sections: {len(extracted_data['sections'])}, Full text length: {len(extracted_data['full_text'])}")
+        
         # If no text was extracted, try PyMuPDF with OCR
         if not extracted_data['full_text'].strip():
+            logger.info("No text extracted with pdfplumber, trying PyMuPDF with OCR")
             extracted_data = extract_with_pymupdf_ocr(file_path)
         
+        logger.info(f"Final extraction result for {file_path}: {len(extracted_data['sections'])} sections, {len(extracted_data['full_text'])} characters")
         return extracted_data
         
     except Exception as e:
@@ -230,11 +242,15 @@ def extract_text_from_pdf(file_path: str) -> Dict[str, Any]:
 def extract_with_pymupdf_ocr(file_path: str) -> Dict[str, Any]:
     """Fallback OCR extraction using PyMuPDF"""
     try:
+        logger.info(f"Starting PyMuPDF extraction for: {file_path}")
         doc = fitz.open(file_path)
+        logger.info(f"PyMuPDF opened file, {len(doc)} pages")
+        
         extracted_data = {
             'title': os.path.basename(file_path),
             'sections': [],
-            'full_text': ''        }
+            'full_text': ''
+        }
         
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
@@ -243,11 +259,14 @@ def extract_with_pymupdf_ocr(file_path: str) -> Dict[str, Any]:
             text = page.get_text()
             
             if not text.strip():
+                logger.info(f"PyMuPDF Page {page_num + 1}: no text, applying OCR")
                 # Apply OCR
                 pix = page.get_pixmap()
                 img_data = pix.tobytes("png")
                 image = Image.open(io.BytesIO(img_data))
                 text = pytesseract.image_to_string(image)
+            else:
+                logger.info(f"PyMuPDF Page {page_num + 1}: extracted {len(text)} characters")
             
             if text.strip():
                 # Clean and normalize the extracted text
@@ -261,8 +280,11 @@ def extract_with_pymupdf_ocr(file_path: str) -> Dict[str, Any]:
                 }
                 extracted_data['sections'].append(section)
                 extracted_data['full_text'] += text + '\n'
+            else:
+                logger.info(f"PyMuPDF Page {page_num + 1}: no useful text after processing")
         
         doc.close()
+        logger.info(f"PyMuPDF extraction complete. Total sections: {len(extracted_data['sections'])}, Full text length: {len(extracted_data['full_text'])}")
         return extracted_data
         
     except Exception as e:
@@ -278,18 +300,43 @@ def index_documents():
     """Index all PDF documents in the documents directory"""
     global document_index
     
+    logger.info(f"Looking for documents in: {DOCUMENTS_DIR}")
+    logger.info(f"Directory exists: {os.path.exists(DOCUMENTS_DIR)}")
+    
     if not os.path.exists(DOCUMENTS_DIR):
         logger.warning(f"Documents directory not found: {DOCUMENTS_DIR}")
         return
     
-    pdf_files = [f for f in os.listdir(DOCUMENTS_DIR) if f.lower().endswith('.pdf')]
+    try:
+        all_files = os.listdir(DOCUMENTS_DIR)
+        logger.info(f"All files in directory: {all_files}")
+        pdf_files = [f for f in all_files if f.lower().endswith('.pdf')]
+        logger.info(f"PDF files found: {pdf_files}")
+    except Exception as e:
+        logger.error(f"Error listing directory {DOCUMENTS_DIR}: {e}")
+        return
     
     for pdf_file in pdf_files:
         file_path = os.path.join(DOCUMENTS_DIR, pdf_file)
-        logger.info(f"Indexing document: {pdf_file}")
+        logger.info(f"Indexing document: {pdf_file} at path: {file_path}")
+        logger.info(f"File exists: {os.path.exists(file_path)}")
+        logger.info(f"File size: {os.path.getsize(file_path) if os.path.exists(file_path) else 'N/A'} bytes")
         
-        document_data = extract_text_from_pdf(file_path)
-        document_index[pdf_file] = document_data
+        try:
+            document_data = extract_text_from_pdf(file_path)
+            logger.info(f"Extracted {len(document_data['sections'])} sections from {pdf_file}")
+            logger.info(f"Full text length: {len(document_data['full_text'])} characters")
+            if 'error' in document_data:
+                logger.error(f"Extraction error for {pdf_file}: {document_data['error']}")
+            document_index[pdf_file] = document_data
+        except Exception as e:
+            logger.error(f"Failed to process {pdf_file}: {e}")
+            document_index[pdf_file] = {
+                'title': pdf_file,
+                'sections': [],
+                'full_text': '',
+                'error': str(e)
+            }
 
 def parse_search_query(query: str) -> List[Dict[str, Any]]:
     """Parse search query to extract exact phrases and regular terms"""
