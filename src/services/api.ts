@@ -1,8 +1,23 @@
 import axios from 'axios';
 
-const API_BASE_URL = (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_API_URL)
-  ? `${process.env.NEXT_PUBLIC_API_URL}/api`
-  : 'http://localhost:5000/api';
+// Check for environment variable in both Vite and Next.js/Vercel formats
+const getApiUrl = () => {
+  // For Vercel deployment (Next.js style)
+  if (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_API_URL) {
+    return `${process.env.NEXT_PUBLIC_API_URL}/api`;
+  }
+  
+  // For Vite development
+  if (import.meta.env?.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  
+  // Fallback to localhost
+  return 'http://localhost:5000/api';
+};
+
+const API_BASE_URL = getApiUrl();
+console.log('API_BASE_URL:', API_BASE_URL); // Debug log
 
 const api = axios.create({
   baseURL: API_BASE_URL,
