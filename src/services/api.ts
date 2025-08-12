@@ -1,23 +1,39 @@
 import axios from 'axios';
 
-// Check for environment variable in both Vite and Next.js/Vercel formats
+// More robust environment variable detection for Vercel
 const getApiUrl = () => {
-  // For Vercel deployment (Next.js style)
-  if (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_API_URL) {
-    return `${process.env.NEXT_PUBLIC_API_URL}/api`;
+  // Try multiple ways to access the environment variable
+  const envUrl = 
+    // Standard Next.js/Vercel way
+    (typeof window === 'undefined' ? process.env.NEXT_PUBLIC_API_URL : undefined) ||
+    // Client-side access
+    (typeof window !== 'undefined' && (window as any).__NEXT_DATA__?.props?.pageProps?.env?.NEXT_PUBLIC_API_URL) ||
+    // Vite way (fallback)
+    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) ||
+    // Direct process.env access
+    (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_API_URL);
+
+  console.log('Environment check:', {
+    processEnv: typeof process !== 'undefined' ? process.env?.NEXT_PUBLIC_API_URL : 'undefined',
+    windowUndefined: typeof window === 'undefined',
+    envUrl: envUrl
+  });
+
+  if (envUrl) {
+    return `${envUrl}/api`;
   }
   
-  // For Vite development
-  if (import.meta.env?.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL;
+  // Hardcode as last resort since we know the Railway URL
+  const isProduction = typeof window !== 'undefined' && window.location.hostname === 'standardssearch.vercel.app';
+  if (isProduction) {
+    return 'https://standardssearch-production.up.railway.app/api';
   }
   
-  // Fallback to localhost
   return 'http://localhost:5000/api';
 };
 
 const API_BASE_URL = getApiUrl();
-console.log('API_BASE_URL:', API_BASE_URL); // Debug log
+console.log('Final API_BASE_URL:', API_BASE_URL);
 
 const api = axios.create({
   baseURL: API_BASE_URL,
