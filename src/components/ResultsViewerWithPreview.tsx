@@ -3,6 +3,32 @@ import { useTranslation } from 'react-i18next';
 import type { SearchResult } from '../services/api';
 import './ResultsViewer.css';
 
+// Function to get API URL - matches the one in api.ts
+const getApiUrl = () => {
+  // Try multiple ways to access the environment variable
+  const envUrl = 
+    // Standard Next.js/Vercel way
+    (typeof window === 'undefined' ? process.env.NEXT_PUBLIC_API_URL : undefined) ||
+    // Client-side access
+    (typeof window !== 'undefined' && (window as any).__NEXT_DATA__?.props?.pageProps?.env?.NEXT_PUBLIC_API_URL) ||
+    // Vite way (fallback)
+    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) ||
+    // Direct process.env access
+    (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_API_URL);
+
+  if (envUrl) {
+    return `${envUrl}/api`;
+  }
+  
+  // Hardcode as last resort since we know the Railway URL
+  const isProduction = typeof window !== 'undefined' && window.location.hostname === 'standardssearch.vercel.app';
+  if (isProduction) {
+    return 'https://standardssearch-production.up.railway.app/api';
+  }
+  
+  return 'http://localhost:5000/api';
+};
+
 interface ResultsViewerProps {
   results: SearchResult[];
   searchQuery: string;
@@ -162,7 +188,7 @@ const ResultsViewer: React.FC<ResultsViewerProps> = ({ results, searchQuery }) =
             <div className="pdf-preview-content">
               {/* PDF page as image with highlighted search terms */}
               <img
-                src={`http://localhost:5000/api/documents/${selectedResult.document}/preview?page=${selectedResult.page}&search=${encodeURIComponent(getSearchTermsForHighlighting(searchQuery))}`}
+                src={`${getApiUrl()}/documents/${selectedResult.document}/preview?page=${selectedResult.page}&search=${encodeURIComponent(getSearchTermsForHighlighting(searchQuery))}`}
                 alt={`Page ${selectedResult.page} of ${selectedResult.document}`}
                 style={{ 
                   width: '100%', 
