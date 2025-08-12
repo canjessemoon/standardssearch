@@ -844,6 +844,28 @@ def health_check():
         'documents_indexed': len(document_index)
     })
 
+@app.route('/api/debug', methods=['GET'])
+def debug_info():
+    """Debug endpoint to show detailed document processing information"""
+    debug_data = {}
+    
+    for filename, doc_data in document_index.items():
+        debug_data[filename] = {
+            'title': doc_data.get('title', 'N/A'),
+            'sections_count': len(doc_data.get('sections', [])),
+            'full_text_length': len(doc_data.get('full_text', '')),
+            'has_error': 'error' in doc_data,
+            'error': doc_data.get('error', None),
+            'first_100_chars': doc_data.get('full_text', '')[:100] if doc_data.get('full_text') else 'No text'
+        }
+    
+    return jsonify({
+        'documents_directory': DOCUMENTS_DIR,
+        'directory_exists': os.path.exists(DOCUMENTS_DIR),
+        'directory_contents': os.listdir(DOCUMENTS_DIR) if os.path.exists(DOCUMENTS_DIR) else [],
+        'document_details': debug_data
+    })
+
 @app.route('/api/debug/document/<document_name>', methods=['GET'])
 def debug_document(document_name):
     """Debug endpoint to examine document extraction"""
