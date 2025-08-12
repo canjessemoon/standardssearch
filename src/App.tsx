@@ -9,7 +9,6 @@ import DocumentSelector from './components/DocumentSelector.tsx';
 import ResultsViewer from './components/ResultsViewerWithPreview.tsx';
 import LoadingSpinner from './components/LoadingSpinner.tsx';
 import SetupInstructions from './components/SetupInstructions.tsx';
-import ChatInterface from './components/ChatInterface.tsx';
 
 function App() {
   const { t } = useTranslation();
@@ -21,7 +20,6 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [backendAvailable, setBackendAvailable] = useState(true);
-  const [activeTab, setActiveTab] = useState<'search' | 'chat'>('search');
 
   useEffect(() => {
     loadDocuments();
@@ -118,61 +116,39 @@ function App() {
       </header>
 
       <main className="app-main">
-        {/* Tab Navigation */}
-        <div className="tab-navigation">
-          <button 
-            className={`tab-button ${activeTab === 'search' ? 'active' : ''}`}
-            onClick={() => setActiveTab('search')}
-          >
-            🔍 {t('search.title', 'Keyword Search')}
-          </button>
-          <button 
-            className={`tab-button ${activeTab === 'chat' ? 'active' : ''}`}
-            onClick={() => setActiveTab('chat')}
-          >
-            🤖 {t('chat.title', 'AI Assistant')}
-          </button>
+        <div className="search-section">
+          <SearchPanel 
+            onSearch={handleSearch}
+            onClear={clearResults}
+            isLoading={isLoading}
+          />
+          
+          <DocumentSelector
+            documents={documents}
+            selectedDocuments={selectedDocuments}
+            onSelectionChange={handleDocumentSelectionChange}
+          />
         </div>
 
-        {activeTab === 'search' ? (
-          <>
-            <div className="search-section">
-              <SearchPanel 
-                onSearch={handleSearch}
-                onClear={clearResults}
-                isLoading={isLoading}
-              />
-              
-              <DocumentSelector
-                documents={documents}
-                selectedDocuments={selectedDocuments}
-                onSelectionChange={handleDocumentSelectionChange}
-              />
-            </div>
-
-            {error && (
-              <div className="error-message">
-                <p>{error}</p>
-              </div>
-            )}
-
-            <div className="results-section">
-              {isLoading ? (
-                <div className="loading-container">
-                  <LoadingSpinner />
-                  <p>{t('search.loading')}</p>
-                </div>
-              ) : (
-                <ResultsViewer 
-                  results={searchResults}
-                  searchQuery={searchQuery}
-                />
-              )}
-            </div>
-          </>
-        ) : (
-          <ChatInterface selectedDocuments={selectedDocuments} />
+        {error && (
+          <div className="error-message">
+            <p>{error}</p>
+          </div>
         )}
+
+        <div className="results-section">
+          {isLoading ? (
+            <div className="loading-container">
+              <LoadingSpinner />
+              <p>{t('search.loading')}</p>
+            </div>
+          ) : (
+            <ResultsViewer 
+              results={searchResults}
+              searchQuery={searchQuery}
+            />
+          )}
+        </div>
       </main>
     </div>
   );

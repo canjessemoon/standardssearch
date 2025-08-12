@@ -577,40 +577,4 @@
   }
 }
 
-/* Tab Navigation */
-.tab-navigation {
-  display: flex;
-  background: white;
-  border-radius: 8px;
-  margin: 20px;
-  overflow: hidden;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-}
-
-.tab-button {
-  flex: 1;
-  padding: 16px 24px;
-  border: none;
-  background: white;
-  color: #666;
-  font-size: 16px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  border-bottom: 3px solid transparent;
-}
-
-.tab-button:hover {
-  background: #f8f9fa;
-  color: #333;
-}
-
-.tab-button.active {
-  background: #f8f9fa;
-  color: #007bff;
-  border-bottom-color: #007bff;
-}
-
-.tab-button:first-child {
-  border-right: 1px solid #e9ecef;
-}
+/* Main content adjustments */
