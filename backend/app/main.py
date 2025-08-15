@@ -382,10 +382,11 @@ if __name__ == '__main__':
         index_documents()
         
         # Start Flask app
-        port = int(os.environ.get('PORT', 5000))
-        host = '0.0.0.0' if os.environ.get('RAILWAY_ENVIRONMENT') else '127.0.0.1'
+        port = int(os.environ.get('PORT', 8080))  # Default to 8080 for Railway
+        host = '0.0.0.0'  # Always bind to all interfaces for Railway
         
         logger.info(f"Starting server on {host}:{port}")
+        logger.info(f"Railway environment: {os.environ.get('RAILWAY_ENVIRONMENT', 'local')}")
         app.run(host=host, port=port, debug=False)
         
     except Exception as e:

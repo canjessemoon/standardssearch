@@ -1,5 +1,6 @@
 [variables]
 PYTHONUNBUFFERED = "1"
+PORT = "8080"
 
 [phases.install]
 aptPkgs = ["tesseract-ocr", "tesseract-ocr-eng", "poppler-utils"]
@@ -7,5 +8,5 @@ aptPkgs = ["tesseract-ocr", "tesseract-ocr-eng", "poppler-utils"]
 [phases.build]
 cmds = ["pip install -r requirements.txt"]
 
-[phases.deploy]
+[start]
 cmd = "python3 app/main.py"
