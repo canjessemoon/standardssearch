@@ -1,1391 +1,393 @@
+"""
+Stable version of the Flask backend with memory optimizations and robust PDF extraction
+"""
+
 import os
+import sys
 import json
+import logging
 import re
+from typing import Dict, List, Any, Optional
+from functools import lru_cache
+from dataclasses import dataclass, asdict
+
+import psutil
+import fitz  # PyMuPDF - more stable than pdfplumber
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import pdfplumber
-import fitz  # PyMuPDF
-import pytesseract
-from PIL import Image
-import io
-import tempfile
-import psutil  # Add for memory monitoring
-from typing import List, Dict, Any, Optional
-import logging
-import unicodedata
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s:%(name)s:%(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# Try to import LLM capabilities (optional)
-try:
-    import sys
-    import os
-    # Add current directory to Python path to ensure llm_search can be imported
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    if current_dir not in sys.path:
-        sys.path.insert(0, current_dir)
-    
-    from llm_search import LLMSearchEngine, enhance_existing_search_with_llm
-    LLM_AVAILABLE = True
-    logger.info("LLM search capabilities loaded successfully")
-except ImportError as e:
-    LLM_AVAILABLE = False
-    logger.warning(f"LLM search capabilities not available: {e}. Install openai, tiktoken, and sklearn to enable.")
+app = Flask(__name__)
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["http://localhost:5173", "https://*.vercel.app", "https://standards-search.vercel.app"],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
 
-def clean_and_normalize_text(text: str) -> str:
-    """
-    Clean and normalize text for better phrase matching.
-    Handles PDF extraction artifacts, OCR issues, and formatting inconsistencies.
-    """
+def log_memory(stage=""):
+    """Log current memory usage"""
+    try:
+        process = psutil.Process()
+        memory_mb = process.memory_info().rss / 1024 / 1024
+        logger.info(f"Memory usage {stage}: {memory_mb:.1f} MB")
+        return memory_mb
+    except Exception as e:
+        logger.warning(f"Could not get memory info: {e}")
+        return 0
+
+# Global variables - now optimized for minimal memory usage
+document_index = {}  # Only metadata: {filename: {title, sections_count, file_path}}
+document_cache = {}  # LRU cache will be handled manually, max 2 documents
+
+# French to English translation map for search terms
+french_to_english = {
+    "ergonomie": ["ergonomics", "human factors", "usability"],
+    "sécurité": ["safety", "security"],
+    "bruit": ["noise", "sound", "acoustic"],
+    "éclairage": ["lighting", "illumination"],
+    "contrôle": ["control", "management"],
+    "interface": ["interface", "display"],
+    "hauteur": ["height", "clearance"],
+    "dégagement": ["clearance", "space"],
+    "tête": ["head", "cranial"],
+    "espace": ["space", "room", "area"],
+    "dimension": ["dimension", "size", "measurement"],
+    "anthropométrie": ["anthropometry", "body measurements"],
+    "poste de travail": ["workstation", "workplace"],
+    "cockpit": ["cockpit", "flight deck"],
+    "cabine": ["cabin", "compartment"],
+    "siège": ["seat", "seating"],
+    "panneau": ["panel", "display"],
+    "commande": ["control", "command"],
+    "vision": ["vision", "sight", "visibility"],
+    "champ de vision": ["field of view", "visual field"],
+    "température": ["temperature", "thermal"],
+    "vibration": ["vibration"],
+    "accélération": ["acceleration"],
+    "force": ["force", "strength"],
+    "charge": ["load", "weight"],
+    "fatigue": ["fatigue", "tiredness"],
+    "stress": ["stress"],
+    "performance": ["performance"],
+    "erreur": ["error", "mistake"],
+    "alarme": ["alarm", "warning"],
+    "signal": ["signal", "indicator"],
+    "couleur": ["color", "colour"],
+    "forme": ["shape", "form"],
+    "taille": ["size"],
+    "position": ["position", "location"],
+    "mouvement": ["movement", "motion"],
+    "geste": ["gesture", "movement"],
+    "main": ["hand", "manual"],
+    "doigt": ["finger"],
+    "pied": ["foot", "pedal"],
+    "jambe": ["leg"],
+    "bras": ["arm"],
+    "épaule": ["shoulder"],
+    "dos": ["back", "spine"],
+    "cou": ["neck"],
+    "posture": ["posture", "position"],
+    "confort": ["comfort"],
+    "douleur": ["pain", "discomfort"],
+    "risque": ["risk", "hazard"],
+    "prévention": ["prevention"],
+    "norme": ["standard", "norm"],
+    "spécification": ["specification", "requirement"],
+    "exigence": ["requirement", "demand"],
+    "test": ["test", "testing"],
+    "mesure": ["measure", "measurement"],
+    "évaluation": ["evaluation", "assessment"],
+    "analyse": ["analysis"],
+    "conception": ["design", "conception"],
+    "développement": ["development"],
+    "amélioration": ["improvement"],
+    "optimisation": ["optimization"],
+    "efficacité": ["efficiency", "effectiveness"],
+    "productivité": ["productivity"],
+    "qualité": ["quality"],
+    "fiabilité": ["reliability"],
+    "maintenance": ["maintenance"],
+    "formation": ["training"],
+    "instruction": ["instruction"],
+    "procédure": ["procedure"],
+    "méthode": ["method"],
+    "technique": ["technique"],
+    "outil": ["tool"],
+    "instrument": ["instrument"],
+    "technologie": ["technology"],
+    "innovation": ["innovation"],
+    "recherche": ["research"]
+}
+
+@dataclass
+class DocumentSection:
+    title: str
+    content: str
+    page: int
+
+@dataclass 
+class DocumentData:
+    title: str
+    sections: List[DocumentSection]
+    full_text: str
+
+def clean_text(text: str) -> str:
+    """Clean and normalize text"""
     if not text:
         return ""
     
-    # Normalize Unicode characters (handle encoding issues)
-    text = unicodedata.normalize('NFKD', text)
-    
-    # Remove soft hyphens and other invisible characters
-    text = text.replace('\u00ad', '')  # soft hyphen
-    text = text.replace('\u200b', '')  # zero-width space
-    text = text.replace('\u200c', '')  # zero-width non-joiner
-    text = text.replace('\u200d', '')  # zero-width joiner
-    text = text.replace('\ufeff', '')  # byte order mark
-    text = text.replace('\u00a0', ' ')  # non-breaking space
-    
-    # Handle line breaks and formatting
-    text = text.replace('\r\n', ' ')
-    text = text.replace('\n', ' ')
-    text = text.replace('\r', ' ')
-    text = text.replace('\t', ' ')
-    
-    # Handle PDF-specific formatting issues
-    text = re.sub(r'(\w)-\s*\n\s*(\w)', r'\1\2', text)  # Remove line-break hyphens
-    text = re.sub(r'(\w)\s*\n\s*(\w)', r'\1 \2', text)  # Join words split across lines
-    
-    # Collapse multiple spaces into single spaces
+    # Remove excessive whitespace
     text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'\n\s*\n', '\n', text)
     
-    # Remove extra spaces around punctuation
-    text = re.sub(r'\s+([.!?,:;])', r'\1', text)
-    text = re.sub(r'([.!?,:;])\s+', r'\1 ', text)
+    # Remove common PDF artifacts
+    text = re.sub(r'[^\w\s\-.,;:()!?"\'/]', ' ', text)
     
     return text.strip()
 
-def create_flexible_phrase_pattern(phrase: str) -> str:
-    """
-    Create a flexible regex pattern for phrase matching that handles:
-    - Hyphens vs spaces (e.g., "body-clearance" vs "body clearance")
-    - Extra whitespace and invisible characters
-    - Case insensitivity
-    - Word boundaries
-    """
-    # Escape special regex characters but preserve spaces and hyphens
-    words = phrase.strip().split()
-    escaped_words = [re.escape(word) for word in words]
-    
-    # Join words with very flexible separator that handles:
-    # - Multiple spaces, tabs, newlines
-    # - Hyphens with or without spaces
-    # - Invisible Unicode characters
-    flexible_separator = r'[\s\-\u00ad\u200b\u200c\u200d\u00a0]*'
-    
-    # Create pattern with word boundaries
-    pattern = r'\b' + flexible_separator.join(escaped_words) + r'\b'
-    
-    return pattern
-
-app = Flask(__name__)
-CORS(app)
-
-# Configuration
-DOCUMENTS_DIR = os.path.join(os.path.dirname(__file__), '..', 'documents')
-LOCALES_DIR = os.path.join(os.path.dirname(__file__), '..', 'locales')
-
-# Document index storage (OPTIMIZED - store only metadata, not full text)
-document_index = {}  # Will store: filename -> {title, sections_count, file_path}
-document_cache = {}  # LRU cache for recently accessed full document data
-MAX_CACHE_SIZE = 2   # Keep only 2 documents in memory at a time
-translation_map = {}
-llm_engine = None  # Global LLM engine with embeddings
-
-# Memory monitoring functions
-def get_memory_usage():
-    """Get current memory usage in MB"""
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / 1024 / 1024
-
-def log_memory(operation=""):
-    """Log current memory usage"""
-    memory_mb = get_memory_usage()
-    logger.info(f"Memory usage {operation}: {memory_mb:.1f} MB")
-
-def get_document_data(filename):
-    """Get document data, loading from disk if not in cache"""
-    if filename in document_cache:
-        logger.debug(f"Loading {filename} from cache")
-        return document_cache[filename]
-    
-    # Load from disk
-    if filename not in document_index:
-        return None
-    
-    file_path = document_index[filename]['file_path']
-    logger.info(f"Loading {filename} from disk into cache")
-    
-    # Extract text from PDF
-    document_data = extract_text_from_pdf(file_path)
-    
-    # Manage cache size
-    if len(document_cache) >= MAX_CACHE_SIZE:
-        # Remove oldest entry
-        oldest_key = next(iter(document_cache))
-        logger.info(f"Removing {oldest_key} from cache to make space")
-        del document_cache[oldest_key]
-    
-    # Add to cache
-    document_cache[filename] = document_data
-    log_memory(f"after caching {filename}")
-    
-    return document_data
-
-def load_translation_map():
-    """Load French to English translation/synonym map"""
-    global translation_map
-    translation_map = {
-        # Environmental terms
-        "évaluation environnementale": ["environmental assessment", "environmental evaluation"],
-        "impact environnemental": ["environmental impact"],
-        "développement durable": ["sustainable development"],
-        "protection": ["protection"],
-        "qualité": ["quality"],
-        "sécurité": ["security", "safety"],
-        "conformité": ["compliance"],
-        "réglementation": ["regulation", "regulatory"],
-        "norme": ["standard", "norm"],
-        "procédure": ["procedure", "process"],
-        "méthode": ["method", "methodology"],
-        "analyse": ["analysis", "analyze"],
-        "test": ["test", "testing"],
-        "mesure": ["measurement", "measure"],
-        "contrôle": ["control", "inspection"],
-        "surveillance": ["monitoring", "surveillance"],
-        "documentation": ["documentation"],
-        "rapport": ["report"],
-        "guide": ["guide", "guidance"],
-        "manuel": ["manual"],
-        "spécification": ["specification"],
-        "exigence": ["requirement"],
-        "critère": ["criteria", "criterion"],
-        "performance": ["performance"],
-        "efficacité": ["efficiency", "effectiveness"],
-        "gestion": ["management"],
-        "système": ["system"],
-        "processus": ["process"],
-        "opération": ["operation"],
-        "maintenance": ["maintenance"],
-        "inspection": ["inspection"],
-        "vérification": ["verification"],
-        "validation": ["validation"],
-        "certification": ["certification"],
-        "audit": ["audit"],
-        "risque": ["risk"],
-        "danger": ["hazard", "danger"],
-        "prévention": ["prevention"],
-        "formation": ["training"],
-        "compétence": ["competence", "skill"],
-        "personnel": ["personnel", "staff"],
-        "équipement": ["equipment"],
-        "matériel": ["material", "equipment"],
-        "outil": ["tool"],
-        "instrument": ["instrument"],
-        "technologie": ["technology"],
-        "innovation": ["innovation"],
-        "recherche": ["research"],
-        "développement": ["development"],
-        "amélioration": ["improvement"]
-    }
-
-def extract_text_from_pdf(file_path: str) -> Dict[str, Any]:
-    """Extract text from PDF with section detection and OCR fallback"""
+@lru_cache(maxsize=2)  # Only cache 2 documents at a time to save memory
+def get_document_data(file_path: str) -> Optional[DocumentData]:
+    """Load document data on-demand with caching"""
     try:
-        logger.info(f"Starting text extraction for: {file_path}")
-        extracted_data = {
-            'title': os.path.basename(file_path),
-            'sections': [],
-            'full_text': ''
-        }
+        logger.info(f"Loading document data for: {file_path}")
         
-        # Try with pdfplumber first
-        logger.info(f"Opening PDF with pdfplumber: {file_path}")
-        with pdfplumber.open(file_path) as pdf:
-            logger.info(f"PDF opened successfully, {len(pdf.pages)} pages found")
-            for page_num, page in enumerate(pdf.pages):
-                page_text = page.extract_text()
-                if page_text:
-                    logger.info(f"Page {page_num + 1}: extracted {len(page_text)} characters")
-                    # Clean and normalize the page text
-                    page_text = clean_and_normalize_text(page_text)
-                    
-                    # Create a section for each page
-                    page_section = {
-                        'title': f'Page {page_num + 1}',
-                        'number': str(page_num + 1),
-                        'content': [page_text],
-                        'page': page_num + 1
-                    }
-                    extracted_data['sections'].append(page_section)
-                    extracted_data['full_text'] += page_text + '\n'
-                else:
-                    logger.info(f"Page {page_num + 1}: no text extracted, trying OCR")
-                    # Try OCR for this page
-                    try:
-                        # Convert page to image and apply OCR
-                        page_image = page.to_image(resolution=150)
-                        pil_image = page_image.original
-                        ocr_text = pytesseract.image_to_string(pil_image)
-                        if ocr_text.strip():
-                            logger.info(f"Page {page_num + 1}: OCR extracted {len(ocr_text)} characters")
-                            # Clean and normalize OCR text
-                            ocr_text = clean_and_normalize_text(ocr_text)
-                            
-                            # Create a page-specific OCR section
-                            ocr_section = {
-                                'title': f'Page {page_num + 1} (OCR)',
-                                'number': str(page_num + 1),
-                                'content': [ocr_text],
-                                'page': page_num + 1
-                            }
-                            extracted_data['sections'].append(ocr_section)
-                            extracted_data['full_text'] += ocr_text + '\n'
-                        else:
-                            logger.info(f"Page {page_num + 1}: OCR produced no useful text")
-                    except Exception as ocr_error:
-                        logger.warning(f"OCR failed for page {page_num + 1}: {ocr_error}")
-        
-        logger.info(f"pdfplumber extraction complete. Total sections: {len(extracted_data['sections'])}, Full text length: {len(extracted_data['full_text'])}")
-        
-        # If no text was extracted, try PyMuPDF with OCR
-        if not extracted_data['full_text'].strip():
-            logger.info("No text extracted with pdfplumber, trying PyMuPDF with OCR")
-            extracted_data = extract_with_pymupdf_ocr(file_path)
-        
-        logger.info(f"Final extraction result for {file_path}: {len(extracted_data['sections'])} sections, {len(extracted_data['full_text'])} characters")
-        return extracted_data
-        
-    except Exception as e:
-        logger.error(f"Error extracting text from {file_path}: {e}")
-        return {
-            'title': os.path.basename(file_path),
-            'sections': [],
-            'full_text': '',
-            'error': str(e)
-        }
-
-def extract_with_pymupdf_ocr(file_path: str) -> Dict[str, Any]:
-    """Fallback OCR extraction using PyMuPDF"""
-    try:
-        logger.info(f"Starting PyMuPDF extraction for: {file_path}")
+        if not os.path.exists(file_path):
+            logger.error(f"File not found: {file_path}")
+            return None
+            
+        # Extract text using stable PyMuPDF
         doc = fitz.open(file_path)
-        logger.info(f"PyMuPDF opened file, {len(doc)} pages")
-        
-        extracted_data = {
-            'title': os.path.basename(file_path),
-            'sections': [],
-            'full_text': ''
-        }
+        sections = []
+        full_text = ""
         
         for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
-            
-            # First try to extract text normally
-            text = page.get_text()
-            
-            if not text.strip():
-                logger.info(f"PyMuPDF Page {page_num + 1}: no text, applying OCR")
-                # Apply OCR
-                pix = page.get_pixmap()
-                img_data = pix.tobytes("png")
-                image = Image.open(io.BytesIO(img_data))
-                text = pytesseract.image_to_string(image)
-            else:
-                logger.info(f"PyMuPDF Page {page_num + 1}: extracted {len(text)} characters")
-            
-            if text.strip():
-                # Clean and normalize the extracted text
-                text = clean_and_normalize_text(text)
+            try:
+                page = doc[page_num]
+                page_text = page.get_text()
                 
-                section = {
-                    'title': f'Page {page_num + 1}',
-                    'number': str(page_num + 1),
-                    'content': [text],
-                    'page': page_num + 1
-                }
-                extracted_data['sections'].append(section)
-                extracted_data['full_text'] += text + '\n'
-            else:
-                logger.info(f"PyMuPDF Page {page_num + 1}: no useful text after processing")
-        
+                if page_text.strip():
+                    cleaned_text = clean_text(page_text)
+                    if cleaned_text:
+                        section = DocumentSection(
+                            title=f"Page {page_num + 1}",
+                            content=cleaned_text,
+                            page=page_num + 1
+                        )
+                        sections.append(section)
+                        full_text += cleaned_text + "\n"
+                        
+                        if (page_num + 1) % 50 == 0:
+                            logger.info(f"Processed {page_num + 1} pages")
+                            
+            except Exception as e:
+                logger.warning(f"Error processing page {page_num + 1}: {e}")
+                continue
+                
         doc.close()
-        logger.info(f"PyMuPDF extraction complete. Total sections: {len(extracted_data['sections'])}, Full text length: {len(extracted_data['full_text'])}")
-        return extracted_data
+        
+        if not sections:
+            logger.warning(f"No text extracted from {file_path}")
+            return None
+            
+        document_data = DocumentData(
+            title=os.path.basename(file_path),
+            sections=sections,
+            full_text=full_text
+        )
+        
+        logger.info(f"Successfully loaded {len(sections)} sections from {file_path}")
+        return document_data
         
     except Exception as e:
-        logger.error(f"PyMuPDF OCR failed for {file_path}: {e}")
-        return {
-            'title': os.path.basename(file_path),
-            'sections': [],
-            'full_text': '',
-            'error': str(e)
-        }
+        logger.error(f"Error loading document {file_path}: {e}")
+        return None
 
 def index_documents():
-    """Index all PDF documents in the documents directory - MEMORY OPTIMIZED"""
+    """Index documents - store only metadata to save memory"""
     global document_index
     
-    logger.info(f"Looking for documents in: {DOCUMENTS_DIR}")
-    logger.info(f"Directory exists: {os.path.exists(DOCUMENTS_DIR)}")
+    log_memory("at startup")
     
-    if not os.path.exists(DOCUMENTS_DIR):
-        logger.warning(f"Documents directory not found: {DOCUMENTS_DIR}")
+    documents_dir = os.path.join(os.path.dirname(__file__), "..", "documents")
+    
+    if not os.path.exists(documents_dir):
+        logger.error(f"Documents directory not found: {documents_dir}")
         return
-    
-    try:
-        all_files = os.listdir(DOCUMENTS_DIR)
-        logger.info(f"All files in directory: {all_files}")
-        pdf_files = [f for f in all_files if f.lower().endswith('.pdf')]
-        logger.info(f"PDF files found: {pdf_files}")
-    except Exception as e:
-        logger.error(f"Error listing directory {DOCUMENTS_DIR}: {e}")
-        return
-    
-    for pdf_file in pdf_files:
-        file_path = os.path.join(DOCUMENTS_DIR, pdf_file)
-        logger.info(f"Indexing document: {pdf_file} at path: {file_path}")
-        logger.info(f"File exists: {os.path.exists(file_path)}")
-        logger.info(f"File size: {os.path.getsize(file_path) if os.path.exists(file_path) else 'N/A'} bytes")
         
+    logger.info(f"Looking for documents in: {documents_dir}")
+    
+    # Get list of PDF files
+    pdf_files = [f for f in os.listdir(documents_dir) if f.lower().endswith('.pdf')]
+    logger.info(f"Found PDF files: {pdf_files}")
+    
+    for filename in pdf_files:
         try:
-            # MEMORY OPTIMIZATION: Only extract to count sections, don't store full text
-            document_data = extract_text_from_pdf(file_path)
-            sections_count = len(document_data['sections'])
-            logger.info(f"Extracted {sections_count} sections from {pdf_file}")
-            logger.info(f"Full text length: {len(document_data['full_text'])} characters")
+            file_path = os.path.join(documents_dir, filename)
+            logger.info(f"Indexing metadata for: {filename}")
             
-            if 'error' in document_data:
-                logger.error(f"Extraction error for {pdf_file}: {document_data['error']}")
+            # Quick check to count sections without loading full content
+            doc = fitz.open(file_path)
+            sections_count = len(doc)  # Number of pages
+            doc.close()
             
-            # MEMORY OPTIMIZATION: Store only metadata, not full text
-            document_index[pdf_file] = {
-                'title': document_data['title'],
+            # Store only metadata - no content in memory
+            document_index[filename] = {
+                'title': filename,
                 'sections_count': sections_count,
-                'file_path': file_path,
-                'has_error': 'error' in document_data
+                'file_path': file_path
             }
             
-            # Clear the large document_data from memory immediately
-            del document_data
-            log_memory(f"after processing {pdf_file}")
+            logger.info(f"Indexed {filename}: {sections_count} sections")
             
         except Exception as e:
-            logger.error(f"Failed to process {pdf_file}: {e}")
-            document_index[pdf_file] = {
-                'title': pdf_file,
-                'sections_count': 0,
-                'file_path': file_path,
-                'has_error': True,
-                'error': str(e)
-            }
+            logger.error(f"Error indexing {filename}: {e}")
+            continue
+    
+    log_memory("after indexing metadata")
+    logger.info(f"Indexing complete. {len(document_index)} documents indexed.")
 
-def parse_search_query(query: str) -> List[Dict[str, Any]]:
-    """Parse search query to extract exact phrases and regular terms"""
-    terms = []
-    
-    # Find quoted phrases using regex
-    quoted_pattern = r'"([^"]*)"'
-    quoted_matches = re.findall(quoted_pattern, query)
-    
-    # Remove quoted phrases from the query to get remaining terms
-    query_without_quotes = re.sub(quoted_pattern, '', query)
-    
-    # Add exact phrases
-    for phrase in quoted_matches:
-        phrase = phrase.strip()
-        if phrase:
-            terms.append({
-                'text': phrase,
-                'is_exact': True
-            })
-    
-    # Add individual terms (not in quotes)
-    individual_terms = [term.strip() for term in query_without_quotes.split() if term.strip()]
-    for term in individual_terms:
-        terms.append({
-            'text': term,
-            'is_exact': False
-        })
-    
-    return terms
-
-def translate_search_terms(search_terms: List[Dict[str, Any]], language: str) -> List[Dict[str, Any]]:
-    """Translate French search terms to English equivalents"""
-    if language != 'fr':
-        return search_terms
-    
-    translated_terms = []
-    
-    for term_obj in search_terms:
-        term = term_obj['text']
-        is_exact = term_obj['is_exact']
+def search_documents(query: str, selected_documents: List[str] = None) -> List[Dict]:
+    """Search documents with on-demand loading"""
+    try:
+        log_memory("before search")
         
-        if is_exact:
-            # For exact phrases, only translate the whole phrase if found
-            term_lower = term.lower().strip()
+        if not query.strip():
+            return []
             
-            # Check for exact phrase matches in translation map
-            if term_lower in translation_map:
-                for english_equiv in translation_map[term_lower]:
-                    translated_terms.append({
-                        'text': english_equiv,
-                        'is_exact': True
-                    })
-            
-            # Always include the original exact phrase
-            translated_terms.append(term_obj)
-        else:
-            # For individual terms, use existing logic
-            term_lower = term.lower().strip()
-            
-            # Check for exact matches in translation map
-            if term_lower in translation_map:
-                for english_equiv in translation_map[term_lower]:
-                    translated_terms.append({
-                        'text': english_equiv,
-                        'is_exact': False
-                    })
-            
-            # Check for partial matches
-            for french_term, english_terms in translation_map.items():
-                if term_lower in french_term or french_term in term_lower:
-                    for english_equiv in english_terms:
-                        translated_terms.append({
-                            'text': english_equiv,
-                            'is_exact': False
-                        })
-            
-            # Always include the original term
-            translated_terms.append(term_obj)
-    
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_terms = []
-    for term_obj in translated_terms:
-        key = (term_obj['text'].lower(), term_obj['is_exact'])
-        if key not in seen:
-            seen.add(key)
-            unique_terms.append(term_obj)
-    
-    return unique_terms
-
-def search_in_text(text: str, search_terms: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Search for terms in text and return matches with context.
-    Uses improved text normalization and flexible phrase matching.
-    """
-    matches = []
-    
-    # Clean and normalize the entire text first
-    cleaned_text = clean_and_normalize_text(text)
-    if not cleaned_text:
-        return matches
-    
-    # Split into sentences for context, but search in larger blocks
-    sentences = re.split(r'[.!?]+', text)  # Use original text for context
-    cleaned_sentences = [clean_and_normalize_text(s) for s in sentences]
-    
-    # Also create larger search blocks (paragraphs) for better phrase detection
-    paragraphs = re.split(r'\n\s*\n', text)
-    cleaned_paragraphs = [clean_and_normalize_text(p) for p in paragraphs]
-    
-    for term_obj in search_terms:
-        term = term_obj['text']
-        is_exact = term_obj['is_exact']
-        term_normalized = clean_and_normalize_text(term).lower()
+        query_lower = query.lower()
+        results = []
         
-        if is_exact:
-            # For exact phrases, use more precise matching
-            pattern = create_flexible_phrase_pattern(term_normalized)
-            found_exact_match = False
-            
-            # First try: exact regex pattern in paragraphs (best for phrases)
-            for para_idx, cleaned_para in enumerate(cleaned_paragraphs):
-                if not cleaned_para:
+        # Translate French terms if needed
+        search_terms = set([query_lower])
+        for french_term, english_translations in french_to_english.items():
+            if french_term in query_lower:
+                search_terms.update(english_translations)
+        
+        # Determine which documents to search
+        docs_to_search = selected_documents if selected_documents else list(document_index.keys())
+        
+        for doc_name in docs_to_search:
+            if doc_name not in document_index:
+                continue
+                
+            try:
+                # Load document on-demand
+                doc_info = document_index[doc_name]
+                doc_data = get_document_data(doc_info['file_path'])
+                
+                if not doc_data:
                     continue
+                
+                # Search through sections
+                for section in doc_data.sections:
+                    section_text_lower = section.content.lower()
                     
-                if re.search(pattern, cleaned_para.lower(), re.IGNORECASE):
-                    # Find the best sentence context within this paragraph
-                    para_sentences = re.split(r'[.!?]+', paragraphs[para_idx])
-                    
-                    for sent_idx, sentence in enumerate(para_sentences):
-                        cleaned_sent = clean_and_normalize_text(sentence)
-                        if cleaned_sent and re.search(pattern, cleaned_sent.lower(), re.IGNORECASE):
-                            # Get surrounding context
-                            start_idx = max(0, sent_idx - 1)
-                            end_idx = min(len(para_sentences), sent_idx + 2)
-                            context_sentences = para_sentences[start_idx:end_idx]
-                            context = '. '.join(s.strip() for s in context_sentences if s.strip())
+                    for term in search_terms:
+                        if term in section_text_lower:
+                            # Find context around the match
+                            start_pos = section_text_lower.find(term)
+                            context_start = max(0, start_pos - 100)
+                            context_end = min(len(section.content), start_pos + len(term) + 100)
+                            context = section.content[context_start:context_end]
                             
-                            # Highlight the matched phrase
-                            highlighted_context = re.sub(
-                                pattern,
-                                lambda m: f'<mark>{m.group()}</mark>',
-                                context,
-                                flags=re.IGNORECASE
-                            )
-                            
-                            matches.append({
-                                'matched_term': term + ' (exact phrase)',
+                            results.append({
+                                'document': doc_data.title,
+                                'section': section.title,
+                                'page': section.page,
                                 'context': context,
-                                'highlighted_context': highlighted_context,
-                                'sentence_index': sent_idx,
-                                'is_exact': True
+                                'relevance': 0.8  # Simple relevance score
                             })
-                            found_exact_match = True
-                            break  # Only match once per paragraph
-                    
-                    if found_exact_match:
-                        break  # Found in this paragraph, don't search further paragraphs for this term
-              # Second try: if no exact match found, try a more precise proximity approach
-            if not found_exact_match:
-                words = term_normalized.split()
-                if len(words) == 2:  # Only for two-word phrases
-                    word1, word2 = words
-                    
-                    # Look for sentences where both words appear as complete words close together
-                    for i, cleaned_sentence in enumerate(cleaned_sentences):
-                        if not cleaned_sentence:
-                            continue
-                        
-                        sent_lower = cleaned_sentence.lower()
-                        
-                        # Use word boundaries to ensure we match complete words only
-                        word1_pattern = r'\b' + re.escape(word1) + r'\b'
-                        word2_pattern = r'\b' + re.escape(word2) + r'\b'
-                        
-                        word1_match = re.search(word1_pattern, sent_lower)
-                        word2_match = re.search(word2_pattern, sent_lower)
-                        
-                        if word1_match and word2_match:
-                            # Check if words are reasonably close (within 20 characters of each other)
-                            word1_pos = word1_match.start()
-                            word2_pos = word2_match.start()
+                            break  # Only one match per section to avoid duplicates
                             
-                            if abs(word1_pos - word2_pos) <= 20:
-                                # Get context (current sentence + surrounding sentences)
-                                start_idx = max(0, i - 1)
-                                end_idx = min(len(sentences), i + 2)
-                                context_sentences = sentences[start_idx:end_idx]
-                                context = '. '.join(s.strip() for s in context_sentences if s.strip())
-                                
-                                # Only add if context is meaningful (not just garbled text)
-                                if len(context.strip()) > 20 and not re.match(r'^[\s\w]{1,3}$', context.strip()):
-                                    # Simple highlighting of both words
-                                    highlighted_context = context
-                                    for word in words:
-                                        highlighted_context = re.sub(
-                                            r'\b(' + re.escape(word) + r')\b',
-                                            r'<mark>\1</mark>',
-                                            highlighted_context,
-                                            flags=re.IGNORECASE
-                                        )
-                                    
-                                    matches.append({
-                                        'matched_term': term + ' (exact phrase - proximity)',
-                                        'context': context,
-                                        'highlighted_context': highlighted_context,
-                                        'sentence_index': i,
-                                        'is_exact': True
-                                    })
-                                    break  # Only find one proximity match per term
-        else:
-            # For individual terms, use simpler matching but still normalize
-            for i, cleaned_sentence in enumerate(cleaned_sentences):
-                if not cleaned_sentence:
-                    continue
-                    
-                if term_normalized in cleaned_sentence.lower():
-                    # Get context (current sentence + surrounding sentences)
-                    start_idx = max(0, i - 1)
-                    end_idx = min(len(sentences), i + 2)
-                    context_sentences = sentences[start_idx:end_idx]
-                    context = '. '.join(s.strip() for s in context_sentences if s.strip())
-                    
-                    # Highlight the matched term
-                    highlighted_context = re.sub(
-                        f'({re.escape(term)})',
-                        r'<mark>\1</mark>',
-                        context,
-                        flags=re.IGNORECASE
-                    )
-                    
-                    matches.append({
-                        'matched_term': term,
-                        'context': context,
-                        'highlighted_context': highlighted_context,
-                        'sentence_index': i,
-                        'is_exact': False
-                    })
-    
-    return matches
+            except Exception as e:
+                logger.error(f"Error searching in {doc_name}: {e}")
+                continue
+        
+        log_memory("after search")
+        
+        # Sort by relevance and limit results
+        results.sort(key=lambda x: x['relevance'], reverse=True)
+        return results[:50]  # Limit to 50 results
+        
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        return []
 
-def search_in_text_enhanced(text: str, search_terms: List[Dict[str, Any]], debug_mode: bool = False) -> List[Dict[str, Any]]:
-    """
-    Enhanced search function with more aggressive text cleaning and multiple search strategies.
-    """
-    matches = []
-    
-    if not text or not search_terms:
-        return matches
-    
-    # Multiple levels of text cleaning for robustness
-    original_text = text
-    cleaned_text = clean_and_normalize_text(text)
-    
-    # Also try with more aggressive cleaning
-    aggressive_clean = re.sub(r'[^\w\s]', ' ', cleaned_text.lower())
-    aggressive_clean = re.sub(r'\s+', ' ', aggressive_clean).strip()
-    
-    if debug_mode:
-        logger.info(f"Original text length: {len(original_text)}")
-        logger.info(f"Cleaned text length: {len(cleaned_text)}")
-        logger.info(f"Aggressive clean length: {len(aggressive_clean)}")
-    
-    # Split into searchable units
-    sentences = re.split(r'[.!?]+', original_text)
-    cleaned_sentences = [clean_and_normalize_text(s) for s in sentences]
-    
-    # Also create larger blocks (paragraphs) for phrase detection
-    paragraphs = re.split(r'\n\s*\n', original_text)
-    cleaned_paragraphs = [clean_and_normalize_text(p) for p in paragraphs]
-    
-    for term_obj in search_terms:
-        term = term_obj['text']
-        is_exact = term_obj['is_exact']
-        term_normalized = clean_and_normalize_text(term).lower()
-        
-        if debug_mode:
-            logger.info(f"Searching for: '{term}' (exact: {is_exact})")
-            logger.info(f"Normalized: '{term_normalized}'")
-        
-        if is_exact:
-            # Multiple search strategies for exact phrases
-            found_matches = []
-            
-            # Strategy 1: Flexible regex pattern
-            pattern = create_flexible_phrase_pattern(term_normalized)
-            
-            # Search in paragraphs (better for phrases spanning lines)
-            for para_idx, paragraph in enumerate(paragraphs):
-                cleaned_para = clean_and_normalize_text(paragraph)
-                if re.search(pattern, cleaned_para, re.IGNORECASE):
-                    found_matches.append(('paragraph', para_idx, paragraph, cleaned_para))
-            
-            # Strategy 2: Simple substring search with various normalizations
-            search_variants = [
-                term_normalized,
-                term_normalized.replace(' ', ''),  # No spaces
-                term_normalized.replace(' ', '-'), # Hyphenated
-                term_normalized.replace(' ', '_'), # Underscored
-                re.sub(r'\s+', ' ', term_normalized), # Single spaces
-            ]
-            
-            for variant in search_variants:
-                if variant in aggressive_clean:
-                    # Find the location and extract context
-                    start_pos = aggressive_clean.find(variant)
-                    if start_pos >= 0:
-                        # Map back to original text approximately
-                        context_start = max(0, start_pos - 100)
-                        context_end = min(len(cleaned_text), start_pos + len(variant) + 100)
-                        context = cleaned_text[context_start:context_end]
-                        found_matches.append(('variant', variant, context, context))
-                        if debug_mode:
-                            logger.info(f"Found variant '{variant}' in aggressive clean")
-                        break
-              # Strategy 3: Word-by-word proximity search with word boundaries
-            words = term_normalized.split()
-            if len(words) > 1:
-                # Look for words that appear close to each other as complete words
-                for sent_idx, sentence in enumerate(cleaned_sentences):
-                    if not sentence:
-                        continue
-                    
-                    sentence_lower = sentence.lower()
-                    word_positions = []
-                    
-                    for word in words:
-                        # Use word boundaries to find complete words only
-                        word_pattern = r'\b' + re.escape(word) + r'\b'
-                        match = re.search(word_pattern, sentence_lower)
-                        if match:
-                            word_positions.append((word, match.start()))
-                    
-                    # If we found all words in the sentence
-                    if len(word_positions) >= len(words):
-                        # Check if they're reasonably close (within 50 characters of each other)
-                        positions = [pos for _, pos in word_positions]
-                        if max(positions) - min(positions) <= 50:
-                            # Only add if this looks like meaningful content
-                            original_sentence = sentences[sent_idx] if sent_idx < len(sentences) else sentence
-                            if len(original_sentence.strip()) > 20 and not re.match(r'^[\s\w]{1,5}$', original_sentence.strip()):
-                                found_matches.append(('proximity', sent_idx, original_sentence, sentence))
-                                if debug_mode:
-                                    logger.info(f"Found proximity match in sentence {sent_idx}")
-                                break  # Only one proximity match per term
-              # Add unique matches to results with quality filtering
-            for match_type, idx, original_context, cleaned_context in found_matches:
-                # Filter out garbled or very short contexts
-                if len(original_context.strip()) < 20:
-                    continue
-                if re.match(r'^[\s\w]{1,5}$', original_context.strip()):
-                    continue
-                if len(original_context.strip().split()) < 3:
-                    continue
-                
-                # Create highlighted context
-                highlighted_context = original_context
-                for word in term.split():
-                    highlighted_context = re.sub(
-                        r'\b(' + re.escape(word) + r')\b',
-                        r'<mark>\1</mark>',
-                        highlighted_context,
-                        flags=re.IGNORECASE
-                    )
-                
-                matches.append({
-                    'matched_term': f"{term} (exact phrase - {match_type})",
-                    'context': original_context[:500],  # Limit context length
-                    'highlighted_context': highlighted_context[:500],
-                    'sentence_index': idx,
-                    'is_exact': True,
-                    'match_strategy': match_type
-                })
-                
-                if debug_mode:
-                    logger.info(f"Added match: {match_type} - {original_context[:100]}...")
-        
-        else:
-            # Individual word search - use existing logic but with enhanced cleaning
-            for i, sentence in enumerate(cleaned_sentences):
-                if not sentence:
-                    continue
-                
-                if term_normalized in sentence.lower():
-                    context = sentences[i] if i < len(sentences) else sentence
-                    highlighted_context = re.sub(
-                        f'({re.escape(term)})',
-                        r'<mark>\1</mark>',
-                        context,
-                        flags=re.IGNORECASE
-                    )
-                    
-                    matches.append({
-                        'matched_term': term,
-                        'context': context[:500],
-                        'highlighted_context': highlighted_context[:500],
-                        'sentence_index': i,
-                        'is_exact': False
-                    })
-    
-    if debug_mode:
-        logger.info(f"Total matches found: {len(matches)}")
-    
-    return matches
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint with memory info"""
+    memory_mb = log_memory("health check")
+    return jsonify({
+        'status': 'healthy',
+        'memory_mb': memory_mb,
+        'documents_indexed': len(document_index),
+        'cache_size': len(document_cache)
+    })
 
 @app.route('/api/documents', methods=['GET'])
 def get_documents():
     """Get list of available documents"""
-    documents = []
-    for filename, data in document_index.items():
-        documents.append({
-            'filename': filename,
-            'title': data['title'],
-            'sections_count': data['sections_count']  # Now stored directly in metadata
-        })
-    
-    return jsonify({'documents': documents})
+    try:
+        documents = []
+        for filename, info in document_index.items():
+            documents.append({
+                'filename': filename,
+                'title': info['title'],
+                'sections_count': info['sections_count']
+            })
+        return jsonify(documents)
+    except Exception as e:
+        logger.error(f"Error getting documents: {e}")
+        return jsonify({'error': 'Failed to retrieve documents'}), 500
 
 @app.route('/api/search', methods=['POST'])
-def search_documents():
-    """Search across selected documents"""
+def search():
+    """Search endpoint"""
     try:
-        data = request.get_json()
-        search_query = data.get('query', '').strip()
-        selected_documents = data.get('documents', [])
-        language = data.get('language', 'en')
-        
-        if not search_query:
-            return jsonify({'error': 'Search query is required'}), 400
-          # Parse search terms - handle quoted phrases
-        search_terms = parse_search_query(search_query)
-        
-        # Translate terms if needed
-        translated_terms = translate_search_terms(search_terms, language)
-        
-        results = []
-        
-        # Search in selected documents (or all if none selected)
-        documents_to_search = selected_documents if selected_documents else list(document_index.keys())
-        
-        for doc_filename in documents_to_search:
-            if doc_filename not in document_index:
-                continue
-                
-            # MEMORY OPTIMIZATION: Load document data on-demand
-            doc_data = get_document_data(doc_filename)
-            if not doc_data:
-                continue
-                
-            doc_results = []            # Search in each section
-            for section in doc_data['sections']:
-                section_content = '\n'.join(section['content'])
-                matches = search_in_text(section_content, translated_terms)
-                
-                # If no exact phrase matches found, try enhanced search for exact phrases
-                exact_phrase_terms = [term for term in translated_terms if term.get('is_exact', False)]
-                if not matches and exact_phrase_terms:
-                    logger.info(f"No matches found with regular search, trying enhanced search for {doc_filename}")
-                    matches = search_in_text_enhanced(section_content, exact_phrase_terms, debug_mode=False)
-                
-                for match in matches:
-                    doc_results.append({
-                        'document': doc_data['title'],
-                        'filename': doc_filename,
-                        'section_title': section['title'],
-                        'section_number': section['number'],
-                        'page': section['page'],
-                        'matched_term': match['matched_term'],
-                        'context': match['context'],
-                        'highlighted_context': match['highlighted_context']
-                    })
-            
-            results.extend(doc_results)
-          # Sort results by relevance (document name, then section number)
-        results.sort(key=lambda x: (x['document'], int(x['section_number']) if x['section_number'].isdigit() else 999))
-        
-        # Optional LLM enhancement
-        llm_response = None
-        if LLM_AVAILABLE and data.get('use_llm', False) and results:
-            try:
-                llm_engine = LLMSearchEngine()
-                enhancement = enhance_existing_search_with_llm(search_query, results, llm_engine)
-                llm_response = enhancement
-            except Exception as llm_error:
-                logger.warning(f"LLM enhancement failed: {llm_error}")
-        
-        response_data = {
-            'results': results,
-            'search_terms': [term['text'] for term in search_terms],
-            'translated_terms': [term['text'] for term in translated_terms],
-            'total_matches': len(results)
-        }
-        
-        if llm_response:
-            response_data['llm_enhanced'] = llm_response
-        
-        return jsonify(response_data)
-        
-    except Exception as e:
-        logger.error(f"Search error: {e}")
-        return jsonify({'error': 'Search failed'}), 500
-
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'documents_indexed': len(document_index)
-    })
-
-@app.route('/api/debug', methods=['GET'])
-def debug_info():
-    """Debug endpoint to show detailed document processing information"""
-    debug_data = {}
-    
-    for filename, doc_data in document_index.items():
-        debug_data[filename] = {
-            'title': doc_data.get('title', 'N/A'),
-            'sections_count': len(doc_data.get('sections', [])),
-            'full_text_length': len(doc_data.get('full_text', '')),
-            'has_error': 'error' in doc_data,
-            'error': doc_data.get('error', None),
-            'first_100_chars': doc_data.get('full_text', '')[:100] if doc_data.get('full_text') else 'No text'
-        }
-    
-    return jsonify({
-        'documents_directory': DOCUMENTS_DIR,
-        'directory_exists': os.path.exists(DOCUMENTS_DIR),
-        'directory_contents': os.listdir(DOCUMENTS_DIR) if os.path.exists(DOCUMENTS_DIR) else [],
-        'document_details': debug_data
-    })
-
-@app.route('/api/debug/document/<document_name>', methods=['GET'])
-def debug_document(document_name):
-    """Debug endpoint to examine document extraction"""
-    try:
-        if document_name not in document_index:
-            return jsonify({'error': 'Document not found'}), 404
-        
-        doc_data = document_index[document_name]
-        search_term = request.args.get('search', '').lower()
-        
-        debug_info = {
-            'document': document_name,
-            'total_sections': len(doc_data['sections']),
-            'full_text_length': len(doc_data['full_text']),
-            'sections': []
-        }
-        
-        # Look for sections containing the search term
-        for i, section in enumerate(doc_data['sections']):
-            section_text = ' '.join(section['content']).lower()
-            
-            section_info = {
-                'index': i,
-                'title': section['title'],
-                'number': section['number'],
-                'page': section.get('page', 'Unknown'),
-                'content_length': len(section_text),
-                'contains_search': search_term in section_text if search_term else False
-            }
-            
-            # If search term provided and found in this section
-            if search_term and search_term in section_text:
-                # Find context around the search term
-                import re
-                sentences = re.split(r'[.!?]+', ' '.join(section['content']))
-                matching_sentences = []
-                
-                for sentence in sentences:
-                    if search_term in sentence.lower():
-                        matching_sentences.append(sentence.strip())
-                
-                section_info['matching_sentences'] = matching_sentences[:5]  # Limit to 5
-                section_info['first_100_chars'] = section_text[:100]
-            
-            debug_info['sections'].append(section_info)
-        
-        # Search full text for the term
-        if search_term:
-            full_text_lower = doc_data['full_text'].lower()
-            debug_info['search_term'] = search_term
-            debug_info['found_in_full_text'] = search_term in full_text_lower
-            
-            # Find all occurrences with context
-            if search_term in full_text_lower:
-                import re
-                pattern = f'.{{0,50}}{re.escape(search_term)}.{{0,50}}'
-                matches = re.findall(pattern, full_text_lower, re.IGNORECASE)
-                debug_info['matches_with_context'] = matches[:10]  # Limit to 10
-        
-        return jsonify(debug_info)
-        
-    except Exception as e:
-        logger.error(f"Debug endpoint error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/debug/search', methods=['POST'])
-def debug_search():
-    """Debug endpoint for troubleshooting search issues"""
-    try:
-        data = request.get_json()
-        search_query = data.get('query', '').strip()
-        document_name = data.get('document', '')
-        
-        if not search_query:
-            return jsonify({'error': 'Search query is required'}), 400
-            
-        if document_name and document_name not in document_index:
-            return jsonify({'error': 'Document not found'}), 404
-        
-        # Parse search terms
-        search_terms = parse_search_query(search_query)
-        
-        debug_results = {
-            'query': search_query,
-            'parsed_terms': search_terms,
-            'document_results': {}
-        }
-        
-        # Search in specified document or all documents
-        docs_to_search = [document_name] if document_name else list(document_index.keys())
-        
-        for doc_name in docs_to_search:
-            doc_data = document_index[doc_name]
-            doc_debug = {
-                'total_sections': len(doc_data['sections']),
-                'full_text_length': len(doc_data['full_text']),
-                'section_results': []
-            }
-            
-            # Search each section with debug mode enabled
-            for section_idx, section in enumerate(doc_data['sections']):
-                section_text = ' '.join(section['content'])
-                
-                # Use enhanced search with debug mode
-                matches = search_in_text_enhanced(section_text, search_terms, debug_mode=True)
-                
-                section_debug = {
-                    'section_index': section_idx,
-                    'section_title': section['title'],
-                    'section_number': section['number'],
-                    'page': section.get('page', 'Unknown'),
-                    'content_length': len(section_text),
-                    'matches_found': len(matches),
-                    'matches': matches[:3]  # Limit to first 3 matches per section
-                }
-                
-                # Also check if individual words are present
-                for term_obj in search_terms:
-                    term = term_obj['text'].lower()
-                    words = term.split()
-                    word_presence = {}
-                    for word in words:
-                        word_presence[word] = word in section_text.lower()
-                    section_debug[f'word_presence_{term}'] = word_presence
-                
-                if matches or any(term_obj['text'].lower() in section_text.lower() for term_obj in search_terms):
-                    doc_debug['section_results'].append(section_debug)
-            
-            debug_results['document_results'][doc_name] = doc_debug
-        
-        return jsonify(debug_results)
-        
-    except Exception as e:
-        logger.error(f"Debug search error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/llm/chat', methods=['POST'])
-def llm_chat():
-    """LLM-powered chat interface for document queries"""
-    global llm_engine
-    
-    if not LLM_AVAILABLE:
-        return jsonify({'error': 'LLM capabilities not available. Install required packages.'}), 503
-    
-    try:
-        data = request.get_json()
+        data = request.json
         query = data.get('query', '').strip()
         selected_documents = data.get('documents', [])
         
         if not query:
             return jsonify({'error': 'Query is required'}), 400
         
-        # If embeddings are not available, use regular search + LLM analysis
-        if not llm_engine or not getattr(llm_engine, 'section_embeddings', None):
-            logger.info("Using fallback LLM search without embeddings")
-            
-            # Perform regular text search first
-            search_terms = parse_search_query(query)
-            translated_terms = translate_search_terms(search_terms, 'en')
-            
-            # Search in selected documents
-            documents_to_search = selected_documents if selected_documents else list(document_index.keys())
-            search_results = []
-            
-            for doc_filename in documents_to_search[:2]:  # Limit to 2 docs to avoid token limit
-                if doc_filename not in document_index:
-                    continue
-                    
-                doc_data = document_index[doc_filename]
-                
-                # Search in each section
-                for section in doc_data['sections'][:10]:  # Limit sections to avoid token limit
-                    section_content = '\n'.join(section['content'])
-                    matches = search_in_text(section_content, translated_terms)
-                    
-                    for match in matches[:3]:  # Limit matches per section
-                        search_results.append({
-                            'document': doc_data['title'],
-                            'section_title': section['title'],
-                            'page': section['page'],
-                            'context': match['context'][:300]  # Limit context length
-                        })
-            
-            # Use LLM to analyze search results
-            if search_results:
-                # Create a simple LLM engine just for text generation
-                simple_llm = LLMSearchEngine()
-                
-                # Prepare context from search results
-                context = f"Query: {query}\n\nRelevant document sections:\n"
-                for i, result in enumerate(search_results[:5], 1):  # Limit to top 5 results
-                    context += f"\n{i}. From {result['document']} - {result['section_title']} (Page {result['page']}):\n"
-                    context += f"{result['context']}\n"
-                
-                # Generate LLM response
-                try:
-                    response = simple_llm.client.chat.completions.create(
-                        model=simple_llm.model,
-                        messages=[
-                            {"role": "system", "content": "You are a helpful assistant that answers questions about technical documents. Provide accurate, concise answers based only on the provided document sections. If the information is not in the provided context, say so."},
-                            {"role": "user", "content": f"Based on the following document sections, please answer this question: {query}\n\n{context}"}
-                        ],
-                        max_tokens=500,
-                        temperature=0.3
-                    )
-                    
-                    llm_response = response.choices[0].message.content
-                    tokens_used = response.usage.total_tokens
-                    
-                except Exception as llm_error:
-                    logger.error(f"LLM generation error: {llm_error}")
-                    llm_response = f"I found relevant information in the documents, but couldn't generate a response due to: {str(llm_error)}"
-                    tokens_used = 0
-            else:
-                llm_response = "I couldn't find relevant information in the selected documents for your query. Please try different search terms or select different documents."
-                tokens_used = 0
-            
-            return jsonify({
-                'query': query,
-                'llm_response': llm_response,
-                'semantic_matches': [],
-                'related_sections': search_results[:5],
-                'tokens_used': tokens_used
-            })
+        logger.info(f"Search request: '{query}' in {len(selected_documents) if selected_documents else 'all'} documents")
         
-        else:
-            # Use the full hybrid search with embeddings if available
-            results = llm_engine.hybrid_search(
-                query, 
-                document_index, 
-                use_semantic=True, 
-                use_llm=True,
-                top_k=5
-            )
-            
-            return jsonify({
-                'query': query,
-                'llm_response': results['llm_response'],
-                'semantic_matches': results['semantic_matches'],
-                'related_sections': results['combined_results'],
-                'tokens_used': results.get('tokens_used', 0)
-            })
-        
-    except Exception as e:
-        logger.error(f"LLM chat error: {e}")
-        return jsonify({'error': f'LLM chat failed: {str(e)}'}), 500
-
-@app.route('/api/llm/status', methods=['GET'])
-def llm_status():
-    """Check LLM availability and configuration"""
-    status = {
-        'llm_available': LLM_AVAILABLE,
-        'openai_api_key_configured': bool(os.getenv('OPENAI_API_KEY'))
-    }
-    
-    if LLM_AVAILABLE:
-        try:
-            llm_engine = LLMSearchEngine()
-            status['llm_engine_ready'] = True
-            status['embedding_model'] = llm_engine.embedding_model
-            status['chat_model'] = llm_engine.model
-        except Exception as e:
-            status['llm_engine_ready'] = False
-            status['error'] = str(e)
-    
-    return jsonify(status)
-
-@app.route('/api/llm/index', methods=['POST'])
-def create_llm_index():
-    """Create semantic embeddings for all documents"""
-    if not LLM_AVAILABLE:
-        return jsonify({'error': 'LLM capabilities not available'}), 503
-    
-    try:
-        llm_engine = LLMSearchEngine()
-        llm_engine.index_documents_with_embeddings(document_index)
+        results = search_documents(query, selected_documents)
         
         return jsonify({
-            'status': 'success',
-            'embeddings_created': len(llm_engine.section_embeddings),
-            'documents_processed': len(document_index)
+            'results': results,
+            'total': len(results),
+            'query': query
         })
         
     except Exception as e:
-        logger.error(f"LLM indexing error: {e}")
-        return jsonify({'error': f'Indexing failed: {str(e)}'}), 500
-
-@app.route('/api/documents/<document_name>/preview', methods=['GET'])
-def get_document_preview(document_name):
-    """Get PDF preview for a specific page with optional text highlighting"""
-    try:
-        # Check if document exists
-        if document_name not in document_index:
-            return jsonify({'error': 'Document not found'}), 404
-        
-        page_number = request.args.get('page', 1, type=int)
-        search_terms = request.args.get('search', '', type=str)
-        
-        # Construct file path
-        file_path = os.path.join(DOCUMENTS_DIR, document_name)
-        if not os.path.exists(file_path):
-            return jsonify({'error': 'PDF file not found'}), 404
-        
-        # Use PyMuPDF to render PDF page as image
-        try:
-            doc = fitz.open(file_path)
-            if page_number < 1 or page_number > len(doc):
-                return jsonify({'error': 'Page number out of range'}), 400
-            
-            page = doc.load_page(page_number - 1)  # 0-indexed
-            
-            # Highlight search terms if provided
-            if search_terms:
-                highlight_search_terms_in_page(page, search_terms)
-            
-            # Render page to image with higher quality
-            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))  # 2x zoom for better quality
-            img_data = pix.tobytes("png")
-            
-            doc.close()
-            
-            # Return image as response
-            from flask import Response
-            return Response(img_data, mimetype='image/png')
-            
-        except Exception as e:
-            logger.error(f"Error rendering PDF page: {e}")
-            return jsonify({'error': f'Failed to render page: {str(e)}'}), 500
-            
-    except Exception as e:
-        logger.error(f"PDF preview error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-def highlight_search_terms_in_page(page, search_terms):
-    """Highlight search terms in a PDF page using PyMuPDF"""
-    try:
-        # Parse search terms (handle quoted phrases and individual words)
-        terms_to_highlight = []
-        
-        if search_terms:
-            # Split search terms by spaces but preserve quoted phrases
-            import shlex
-            try:
-                parsed_terms = shlex.split(search_terms)
-            except ValueError:
-                # Fallback if shlex fails (unmatched quotes)
-                parsed_terms = search_terms.split()
-            
-            for term in parsed_terms:
-                if term.strip():
-                    terms_to_highlight.append(term.strip())
-        
-        # Highlight each term with a different color
-        colors = [
-            fitz.utils.getColor("yellow"),      # Primary highlight - yellow
-            fitz.utils.getColor("lightgreen"),  # Secondary highlight - light green
-            fitz.utils.getColor("lightblue"),   # Tertiary highlight - light blue
-            fitz.utils.getColor("pink"),        # Additional highlight - pink
-            fitz.utils.getColor("orange"),      # Additional highlight - orange
-        ]
-        
-        total_highlights = 0
-        
-        for i, term in enumerate(terms_to_highlight[:5]):  # Limit to 5 terms to avoid clutter
-            color = colors[i % len(colors)]
-            
-            # Search for the term in the page (case insensitive)
-            text_instances = page.search_for(term, flags=fitz.TEXT_DEHYPHENATE)
-            
-            # Also try variations of the term for better matching
-            if not text_instances and len(term) > 3:
-                # Try without common suffixes/prefixes
-                variations = [
-                    term.lower(),
-                    term.upper(),
-                    term.capitalize(),
-                ]
-                
-                for variation in variations:
-                    text_instances = page.search_for(variation, flags=fitz.TEXT_DEHYPHENATE)
-                    if text_instances:
-                        break
-            
-            # Highlight each occurrence
-            for inst in text_instances:
-                try:
-                    highlight = page.add_highlight_annot(inst)
-                    highlight.set_colors({"stroke": color, "fill": color})
-                    highlight.set_opacity(0.6)  # Make it visible but not too bright
-                    highlight.update()
-                    total_highlights += 1
-                except Exception as e:
-                    logger.warning(f"Failed to add highlight annotation: {e}")
-                    continue
-        
-        logger.info(f"Successfully added {total_highlights} highlights for {len(terms_to_highlight)} search terms on page")
-        
-    except Exception as e:
-        logger.warning(f"Failed to highlight search terms: {e}")
-        # Don't fail the entire request if highlighting fails
-
-@app.route('/api/documents/<document_name>/info', methods=['GET'])
-def get_document_info(document_name):
-    """Get document information including page count"""
-    try:
-        if document_name not in document_index:
-            return jsonify({'error': 'Document not found'}), 404
-        
-        file_path = os.path.join(DOCUMENTS_DIR, document_name)
-        if not os.path.exists(file_path):
-            return jsonify({'error': 'PDF file not found'}), 404
-        
-        # Get page count using PyMuPDF
-        doc = fitz.open(file_path)
-        page_count = len(doc)
-        doc.close()
-        
-        doc_data = document_index[document_name]
-        
-        return jsonify({
-            'filename': document_name,
-            'title': doc_data['title'],
-            'page_count': page_count,
-            'sections_count': len(doc_data['sections'])
-        })
-        
-    except Exception as e:
-        logger.error(f"Document info error: {e}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Search endpoint error: {e}")
+        return jsonify({'error': 'Search failed'}), 500
 
 if __name__ == '__main__':
-    log_memory("at startup")
-    
-    # Load translation map and index documents on startup
-    load_translation_map()
-    log_memory("after loading translation map")
-    
-    index_documents()
-    log_memory("after indexing documents")
-    
-    # Index documents for LLM semantic search if LLM is available
-    if LLM_AVAILABLE and document_index:
-        try:
-            logger.info("Initializing LLM search engine...")
-            llm_engine = LLMSearchEngine()
-            log_memory("after LLM engine init")
-            
-            # Skip embeddings for now due to API quota limitations
-            logger.info("Skipping embedding creation due to API quota - LLM will use text search fallback")
-            logger.info("LLM search capabilities (without embeddings) loaded successfully")
-                
-        except Exception as e:
-            logger.error(f"Failed to initialize LLM search: {e}")
-            llm_engine = None
-    
-    log_memory("before starting Flask app")
-    # Run the Flask app - use production settings
-    port = int(os.environ.get('PORT', 5000))
-    debug_mode = os.environ.get('FLASK_ENV', 'production') == 'development'
-    app.run(debug=debug_mode, host='0.0.0.0', port=port)
+    try:
+        logger.info("Starting Standards Search Backend (Stable Version)")
+        log_memory("startup")
+        
+        # Index documents
+        index_documents()
+        
+        # Start Flask app
+        port = int(os.environ.get('PORT', 5000))
+        host = '0.0.0.0' if os.environ.get('RAILWAY_ENVIRONMENT') else '127.0.0.1'
+        
+        logger.info(f"Starting server on {host}:{port}")
+        app.run(host=host, port=port, debug=False)
+        
+    except Exception as e:
+        logger.error(f"Failed to start server: {e}")
+        sys.exit(1)
