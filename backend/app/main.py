@@ -9,6 +9,7 @@ import pytesseract
 from PIL import Image
 import io
 import tempfile
+import psutil  # Add for memory monitoring
 from typing import List, Dict, Any, Optional
 import logging
 import unicodedata
@@ -101,10 +102,52 @@ CORS(app)
 DOCUMENTS_DIR = os.path.join(os.path.dirname(__file__), '..', 'documents')
 LOCALES_DIR = os.path.join(os.path.dirname(__file__), '..', 'locales')
 
-# Document index storage
-document_index = {}
+# Document index storage (OPTIMIZED - store only metadata, not full text)
+document_index = {}  # Will store: filename -> {title, sections_count, file_path}
+document_cache = {}  # LRU cache for recently accessed full document data
+MAX_CACHE_SIZE = 2   # Keep only 2 documents in memory at a time
 translation_map = {}
 llm_engine = None  # Global LLM engine with embeddings
+
+# Memory monitoring functions
+def get_memory_usage():
+    """Get current memory usage in MB"""
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024 / 1024
+
+def log_memory(operation=""):
+    """Log current memory usage"""
+    memory_mb = get_memory_usage()
+    logger.info(f"Memory usage {operation}: {memory_mb:.1f} MB")
+
+def get_document_data(filename):
+    """Get document data, loading from disk if not in cache"""
+    if filename in document_cache:
+        logger.debug(f"Loading {filename} from cache")
+        return document_cache[filename]
+    
+    # Load from disk
+    if filename not in document_index:
+        return None
+    
+    file_path = document_index[filename]['file_path']
+    logger.info(f"Loading {filename} from disk into cache")
+    
+    # Extract text from PDF
+    document_data = extract_text_from_pdf(file_path)
+    
+    # Manage cache size
+    if len(document_cache) >= MAX_CACHE_SIZE:
+        # Remove oldest entry
+        oldest_key = next(iter(document_cache))
+        logger.info(f"Removing {oldest_key} from cache to make space")
+        del document_cache[oldest_key]
+    
+    # Add to cache
+    document_cache[filename] = document_data
+    log_memory(f"after caching {filename}")
+    
+    return document_data
 
 def load_translation_map():
     """Load French to English translation/synonym map"""
@@ -297,7 +340,7 @@ def extract_with_pymupdf_ocr(file_path: str) -> Dict[str, Any]:
         }
 
 def index_documents():
-    """Index all PDF documents in the documents directory"""
+    """Index all PDF documents in the documents directory - MEMORY OPTIMIZED"""
     global document_index
     
     logger.info(f"Looking for documents in: {DOCUMENTS_DIR}")
@@ -323,18 +366,34 @@ def index_documents():
         logger.info(f"File size: {os.path.getsize(file_path) if os.path.exists(file_path) else 'N/A'} bytes")
         
         try:
+            # MEMORY OPTIMIZATION: Only extract to count sections, don't store full text
             document_data = extract_text_from_pdf(file_path)
-            logger.info(f"Extracted {len(document_data['sections'])} sections from {pdf_file}")
+            sections_count = len(document_data['sections'])
+            logger.info(f"Extracted {sections_count} sections from {pdf_file}")
             logger.info(f"Full text length: {len(document_data['full_text'])} characters")
+            
             if 'error' in document_data:
                 logger.error(f"Extraction error for {pdf_file}: {document_data['error']}")
-            document_index[pdf_file] = document_data
+            
+            # MEMORY OPTIMIZATION: Store only metadata, not full text
+            document_index[pdf_file] = {
+                'title': document_data['title'],
+                'sections_count': sections_count,
+                'file_path': file_path,
+                'has_error': 'error' in document_data
+            }
+            
+            # Clear the large document_data from memory immediately
+            del document_data
+            log_memory(f"after processing {pdf_file}")
+            
         except Exception as e:
             logger.error(f"Failed to process {pdf_file}: {e}")
             document_index[pdf_file] = {
                 'title': pdf_file,
-                'sections': [],
-                'full_text': '',
+                'sections_count': 0,
+                'file_path': file_path,
+                'has_error': True,
                 'error': str(e)
             }
 
@@ -751,7 +810,7 @@ def get_documents():
         documents.append({
             'filename': filename,
             'title': data['title'],
-            'sections_count': len(data['sections'])
+            'sections_count': data['sections_count']  # Now stored directly in metadata
         })
     
     return jsonify({'documents': documents})
@@ -782,7 +841,11 @@ def search_documents():
             if doc_filename not in document_index:
                 continue
                 
-            doc_data = document_index[doc_filename]
+            # MEMORY OPTIMIZATION: Load document data on-demand
+            doc_data = get_document_data(doc_filename)
+            if not doc_data:
+                continue
+                
             doc_results = []            # Search in each section
             for section in doc_data['sections']:
                 section_content = '\n'.join(section['content'])
@@ -1297,15 +1360,21 @@ def get_document_info(document_name):
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
+    log_memory("at startup")
+    
     # Load translation map and index documents on startup
     load_translation_map()
+    log_memory("after loading translation map")
+    
     index_documents()
+    log_memory("after indexing documents")
     
     # Index documents for LLM semantic search if LLM is available
     if LLM_AVAILABLE and document_index:
         try:
             logger.info("Initializing LLM search engine...")
             llm_engine = LLMSearchEngine()
+            log_memory("after LLM engine init")
             
             # Skip embeddings for now due to API quota limitations
             logger.info("Skipping embedding creation due to API quota - LLM will use text search fallback")
@@ -1315,5 +1384,8 @@ if __name__ == '__main__':
             logger.error(f"Failed to initialize LLM search: {e}")
             llm_engine = None
     
-    # Run the Flask app
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    log_memory("before starting Flask app")
+    # Run the Flask app - use production settings
+    port = int(os.environ.get('PORT', 5000))
+    debug_mode = os.environ.get('FLASK_ENV', 'production') == 'development'
+    app.run(debug=debug_mode, host='0.0.0.0', port=port)
