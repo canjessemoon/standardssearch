@@ -382,7 +382,7 @@ if __name__ == '__main__':
         index_documents()
         
         # Start Flask app
-        port = int(os.environ.get('PORT', 8080))  # Default to 8080 for Railway
+        port = int(os.environ.get('PORT', 5000))  # Use 5000 to match Railway config
         host = '0.0.0.0'  # Always bind to all interfaces for Railway
         
         logger.info(f"Starting server on {host}:{port}")
